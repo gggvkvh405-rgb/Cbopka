@@ -1,6 +1,6 @@
-import { useEffect, useState, useRef, useMemo } from 'react';
+import { useEffect, useState, useRef, useMemo, lazy, Suspense } from 'react';
 import { io } from 'socket.io-client';
-import P2PApp from './P2PApp.jsx';
+const P2PApp = lazy(()=> import('./P2PApp.jsx'));
 
 const CUSTOM_SERVER = localStorage.getItem('cb_server_url') || window.CBOPKA_SERVER_URL || '';
 const API = CUSTOM_SERVER || '';
@@ -98,11 +98,15 @@ export default function App(){
   });
 
   if(p2pMode){
-    return <P2PApp onBack={()=>{
-      localStorage.removeItem('cb_p2p_mode');
-      setP2pMode(false);
-      window.history.replaceState({}, '', window.location.pathname);
-    }} initialInvite={p2pInvite} />;
+    return (
+      <Suspense fallback={<div className="min-h-screen flex items-center justify-center bg-[#0f0f12] text-white">Загрузка P2P...</div>}>
+        <P2PApp onBack={()=>{
+          localStorage.removeItem('cb_p2p_mode');
+          setP2pMode(false);
+          window.history.replaceState({}, '', window.location.pathname);
+        }} initialInvite={p2pInvite} />
+      </Suspense>
+    );
   }
 
   const [user, setUser] = useState(()=> {

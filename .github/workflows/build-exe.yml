@@ -14,11 +14,14 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-      - name: Build client on Linux (reliable)
+      - name: Build client on Linux
         run: |
           cd client
-          npm install --legacy-peer-deps
-          npm run build
+          echo "Node $(node -v) NPM $(npm -v)"
+          cat package.json
+          npm install --legacy-peer-deps 2>&1 | tail -50
+          echo "=== BUILD START ==="
+          npm run build 2>&1 | tail -100
           ls -lh dist/
       - name: Upload client dist
         uses: actions/upload-artifact@v4
@@ -45,7 +48,7 @@ jobs:
 
       - name: List client dist
         shell: bash
-        run: ls -lh client/dist/
+        run: ls -lh client/dist/ && ls -lh client/dist/assets/ | head -20
 
       - name: Install server deps
         shell: bash
