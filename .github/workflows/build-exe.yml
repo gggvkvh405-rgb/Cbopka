@@ -5,6 +5,9 @@ on:
     branches: [ "release-exe", "arena/01a0c9e9-cbopka", "main" ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build-win:
     runs-on: windows-latest
@@ -76,7 +79,7 @@ jobs:
           cat /tmp/links.txt >> /tmp/DOWNLOAD-LINKS.md || true
           echo "Built $(date)" >> /tmp/DOWNLOAD-LINKS.md || true
           cat /tmp/DOWNLOAD-LINKS.md || true
-          # Try to commit to arena branch
+          # Commit to arena branch
           git config --global user.email "bot@example.com" || true
           git config --global user.name "bot" || true
           git remote set-url origin https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git || true
