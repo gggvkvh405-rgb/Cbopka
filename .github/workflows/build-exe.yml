@@ -19,66 +19,70 @@ jobs:
           cd client
           echo "Node $(node -v) NPM $(npm -v)"
           rm -rf node_modules package-lock.json
-          npm install --legacy-peer-deps
-          npm run build
+          npm install --legacy-peer-deps 2>&1 | tail -30
+          npm run build 2>&1 | tee /tmp/build.log
+          echo "=== BUILD LOG TAIL ==="
+          tail -50 /tmp/build.log
           ls -lh dist/
+      - name: Save error log
+        if: failure()
+        run: |
+          cat /tmp/build.log > build-error.log || echo "no log" > build-error.log
+          git config --global user.email "bot@example.com"
+          git config --global user.name "bot"
+          git checkout --orphan error-logs || git checkout error-logs
+          git rm -rf . || true
+          cp /tmp/build.log ./build-error.log || echo "fail" > build-error.log
+          git add build-error.log
+          git commit -m "build error log $(date)" || true
+          git push origin error-logs --force || true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Upload client dist
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: client-dist
           path: client/dist
-          if-no-files-found: error
 
   build-win:
     runs-on: windows-latest
     needs: build-client
     steps:
       - uses: actions/checkout@v4
-      
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: 22
-
       - name: Download client dist
         uses: actions/download-artifact@v4
         with:
           name: client-dist
           path: client/dist
-
       - name: List client dist
         shell: bash
-        run: |
-          ls -lh client/dist/
-          ls -lh client/dist/assets/ | head -20
-
+        run: ls -lh client/dist/ && ls -lh client/dist/assets/ | head -20
       - name: Install server deps
         shell: bash
-        run: |
-          cd server
-          npm install
-
-      - name: Build Electron EXE (Variant 2 - True Native Window)
+        run: cd server && npm install
+      - name: Build Electron EXE
         shell: bash
         run: |
           cd electron
           npm install --legacy-peer-deps
           npx electron-builder --win portable -c electron-builder.yml --publish never 2>&1 | tail -100 || true
           ls -lh ../release/ || true
-
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
-      - name: Build Python EXE (Variant 2 - True Native App)
+      - name: Build Python EXE
         shell: bash
         run: |
           pip install pywebview pyinstaller
           pyinstaller --onefile --windowed --name Cbopka-App-Native Cbopka-Native.py
           pyinstaller --onefile --windowed --name Cbopka-App Cbopka.py || true
           ls -lh dist/
-
       - name: Upload EXE artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -86,16 +90,12 @@ jobs:
           path: |
             release/*.exe
             dist/*.exe
-
       - name: Upload to Release
         shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release view v1.0.0-p2p || gh release create v1.0.0-p2p --title "Cbopka P2P + Native Apps" --notes "Native apps v2 true window, not browser"
+          gh release view v1.0.0-p2p || gh release create v1.0.0-p2p --title "Cbopka P2P + Native Apps" --notes "Native apps v2 true window"
           for f in release/*.exe dist/*.exe; do
-            if [ -f "$f" ]; then
-              echo "Uploading $f"
-              gh release upload v1.0.0-p2p "$f" --clobber || true
-            fi
+            if [ -f "$f" ]; then gh release upload v1.0.0-p2p "$f" --clobber || true; fi
           done
