@@ -25,14 +25,17 @@ jobs:
           echo "=== TAIL ==="
           tail -100 /tmp/build.log
           ls -lh dist/
-      - name: Comment error on commit
+      - name: Upload error log as release asset on failure
         if: failure()
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          LOG=$(cat /tmp/build.log | tail -100 | head -c 60000)
-          echo "Posting comment..."
-          gh api repos/${{ github.repository }}/commits/${{ github.sha }}/comments -f body="Build failed:\n\`\`\`\n$LOG\n\`\`\`" 2>&1 | head -20 || true
+          cat /tmp/build.log | tail -200 > /tmp/error.txt
+          echo "Error log tail:"
+          cat /tmp/error.txt
+          gh release view v1.0.0-p2p || gh release create v1.0.0-p2p --title "Cbopka P2P + Native Apps" --notes "logs"
+          gh release upload v1.0.0-p2p /tmp/build.log --clobber || true
+          gh release upload v1.0.0-p2p /tmp/error.txt --clobber || true
       - name: Upload client dist
         if: success()
         uses: actions/upload-artifact@v4
