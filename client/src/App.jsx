@@ -1,13 +1,15 @@
 import { useEffect, useState, useRef, useMemo } from 'react';
 import { io } from 'socket.io-client';
+import P2PApp from './P2PApp.jsx';
 
-const API = ''; // proxied via vite
-const SOCKET_URL = window.location.origin;
+const CUSTOM_SERVER = localStorage.getItem('cb_server_url') || window.CBOPKA_SERVER_URL || '';
+const API = CUSTOM_SERVER || '';
+const SOCKET_URL = CUSTOM_SERVER || window.location.origin;
 
 function uid() { return Math.random().toString(36).slice(2); }
 
 // ---------- Auth ----------
-function Auth({onAuth}) {
+function Auth({onAuth, onP2P}) {
   const [mode, setMode] = useState('login');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -34,7 +36,6 @@ function Auth({onAuth}) {
 
   return (
     <div className="min-h-screen flex items-center justify-center p-4 bg-[#0f0f12] relative overflow-hidden">
-      {/* bg blobs */}
       <div className="absolute w-[600px] h-[600px] bg-[#7c5cff]/20 rounded-full blur-[120px] -top-40 -left-40" />
       <div className="absolute w-[500px] h-[500px] bg-[#00d084]/15 rounded-full blur-[120px] -bottom-40 -right-40" />
       <div className="w-full max-w-[420px] relative z-10">
@@ -69,12 +70,17 @@ function Auth({onAuth}) {
 
           <div className="mt-6 grid grid-cols-3 gap-2 text-[11px] text-[#5a5a66] text-center">
             <div className="bg-[#232329] rounded-xl py-3 border border-[#2a2a33]"><span className="block text-white font-semibold text-[13px]">1080p</span>Демо экрана</div>
-            <div className="bg-[#232329] rounded-xl py-3 border border-[#2a2a33]"><span className="block text-white font-semibold text-[13px]">∞</span>Группы</div>
+            <div className="bg-[#232329] rounded-xl py-3 border border-[#2a2a33]"><span className="block text-white font-semibold text-[13px]">SQLite</span>База</div>
             <div className="bg-[#232329] rounded-xl py-3 border border-[#2a2a33]"><span className="block text-white font-semibold text-[13px]">P2P</span>Звонки</div>
           </div>
+
+          <button onClick={onP2P} className="w-full mt-4 bg-[#00d084]/10 hover:bg-[#00d084]/20 border border-[#00d084]/20 text-[#00d084] font-semibold py-3 rounded-xl text-[13px] transition">
+            ⚡ P2P без сервера — сразу общаться
+            <span className="block text-[11px] font-normal text-[#9a9aa3] mt-0.5">Без WiFi и Render, через интернет по ID</span>
+          </button>
         </div>
 
-        <p className="text-center text-[12px] text-[#5a5a66] mt-6">Работает на ПК и телефоне. Без регистрации номера.</p>
+        <p className="text-center text-[12px] text-[#5a5a66] mt-6">Работает на ПК и телефоне. Нативное приложение — Electron и APK.</p>
       </div>
     </div>
   );
@@ -82,6 +88,23 @@ function Auth({onAuth}) {
 
 // ---------- Main App ----------
 export default function App(){
+  const [p2pMode, setP2pMode] = useState(()=>{
+    const params = new URLSearchParams(window.location.search);
+    return params.has('p2p') || localStorage.getItem('cb_p2p_mode')==='1';
+  });
+  const [p2pInvite] = useState(()=>{
+    const params = new URLSearchParams(window.location.search);
+    return params.get('p2p') || '';
+  });
+
+  if(p2pMode){
+    return <P2PApp onBack={()=>{
+      localStorage.removeItem('cb_p2p_mode');
+      setP2pMode(false);
+      window.history.replaceState({}, '', window.location.pathname);
+    }} initialInvite={p2pInvite} />;
+  }
+
   const [user, setUser] = useState(()=> {
     try{ return JSON.parse(localStorage.getItem('cb_user')||'null'); }catch{ return null; }
   });
@@ -92,36 +115,41 @@ export default function App(){
   const [incomingReq, setIncomingReq] = useState([]);
   const [outgoingReq, setOutgoingReq] = useState([]);
   const [groups, setGroups] = useState([]);
-  const [allUsers, setAllUsers] = useState([]); // search results
-  const [onlineMap, setOnlineMap] = useState({}); // userId -> bool
+  const [allUsers, setAllUsers] = useState([]);
+  const [onlineMap, setOnlineMap] = useState({});
+  const [theme, setTheme] = useState(()=> localStorage.getItem('cb_theme')||'dark');
 
-  const [activeConvo, setActiveConvo] = useState(null); // {id, type:'dm'|'group', user?, group?}
-  const [messages, setMessages] = useState({}); // convoId -> []
+  const [activeConvo, setActiveConvo] = useState(null);
+  const [messages, setMessages] = useState({});
   const [input, setInput] = useState('');
-  const [typingMap, setTypingMap] = useState({}); // convoId -> userId
+  const [typingMap, setTypingMap] = useState({});
   const [showSidebar, setShowSidebar] = useState(false);
   const [showRight, setShowRight] = useState(false);
-  const [tab, setTab] = useState('chats'); // chats|friends|groups
+  const [tab, setTab] = useState('chats');
+  const [searchMsg, setSearchMsg] = useState('');
 
   const [showAddFriend, setShowAddFriend] = useState(false);
   const [showCreateGroup, setShowCreateGroup] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
+  const [editingMsg, setEditingMsg] = useState(null);
 
   // Call state
-  const [call, setCall] = useState(null); // {callId, type, groupId?, participants:[user], isIncoming, from?}
-  const [callParticipants, setCallParticipants] = useState({}); // userId -> {stream, muted, camOff}
+  const [call, setCall] = useState(null);
   const [localStream, setLocalStream] = useState(null);
-  const [screenStream, setScreenStream] = useState(null);
+  const [remoteStreams, setRemoteStreams] = useState({});
   const [isMuted, setIsMuted] = useState(false);
   const [isCamOff, setIsCamOff] = useState(false);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
+  const [noiseSuppression, setNoiseSuppression] = useState(true);
 
-  const peersRef = useRef(new Map()); // userId -> RTCPeerConnection
+  const peersRef = useRef(new Map());
   const localVideoRef = useRef(null);
   const messagesEndRef = useRef(null);
   const typingTimeoutRef = useRef(null);
+  const mediaRecorderRef = useRef(null);
+  const fileInputRef = useRef(null);
 
-  // auth handler
   function handleAuth(u, t){
     setUser(u); setToken(t);
   }
@@ -130,7 +158,13 @@ export default function App(){
     setUser(null); setToken(''); socket?.disconnect();
   }
 
-  // fetch initial data
+  // Theme
+  useEffect(()=>{
+    localStorage.setItem('cb_theme', theme);
+    document.documentElement.setAttribute('data-theme', theme);
+  }, [theme]);
+
+  // Fetch initial data
   useEffect(()=>{
     if(!token) return;
     fetch(`${API}/api/friends`, {headers:{Authorization:`Bearer ${token}`}}).then(r=>r.json()).then(d=>{
@@ -141,9 +175,13 @@ export default function App(){
     fetch(`${API}/api/groups`, {headers:{Authorization:`Bearer ${token}`}}).then(r=>r.json()).then(d=>{
       if(d.groups) setGroups(d.groups);
     });
+    // Load TURN config
+    fetch(`${API}/api/turn`, {headers:{Authorization:`Bearer ${token}`}}).then(r=>r.json()).then(d=>{
+      if(d.iceServers) localStorage.setItem('cb_ice', JSON.stringify(d.iceServers));
+    }).catch(()=>{});
   }, [token]);
 
-  // socket connect
+  // Socket connect
   useEffect(()=>{
     if(!token || !user) return;
     const s = io(SOCKET_URL, {auth:{token}});
@@ -168,373 +206,315 @@ export default function App(){
     });
     s.on('friends:removed', ({friendId})=>{
       setFriends(f=> f.filter(x=>x.id!==friendId));
-    });
-    s.on('friends:request:accepted', (fr)=>{
-      setOutgoingReq(r=> r.filter(x=>x.id!==fr.id));
-      setIncomingReq(r=> r.filter(x=>x.id!==fr.id));
-    });
-    s.on('friends:request:rejected', (fr)=>{
-      setOutgoingReq(r=> r.filter(x=>x.id!==fr.id));
-      setIncomingReq(r=> r.filter(x=>x.id!==fr.id));
-    });
-
-    s.on('group:created', (g)=>{
-      setGroups(prev=> {
-        const exists = prev.find(x=>x.id===g.id);
-        if(exists) return prev.map(x=> x.id===g.id? g : x);
-        return [...prev, g];
-      });
-    });
-    s.on('group:updated', (g)=>{
-      setGroups(prev=> prev.map(x=> x.id===g.id? g : x));
-      if(activeConvo?.id===g.id) setActiveConvo(a=> ({...a, group:g}));
-    });
-    s.on('group:left', ({groupId})=>{
-      setGroups(prev=> prev.filter(x=>x.id!==groupId));
-      if(activeConvo?.id===groupId) setActiveConvo(null);
+      if(activeConvo?.user?.id===friendId) setActiveConvo(null);
     });
 
     s.on('message:new', (msg)=>{
-      setMessages(prev=> {
-        const list = prev[msg.convoId]||[];
-        if(list.find(m=>m.id===msg.id)) return prev;
-        return {...prev, [msg.convoId]: [...list, msg]};
+      setMessages(ms=> {
+        const arr = ms[msg.convoId] || [];
+        return {...ms, [msg.convoId]: [...arr, msg]};
       });
     });
-    s.on('typing:start', ({convoId, userId})=> setTypingMap(m=>({...m, [convoId]: userId})));
-    s.on('typing:stop', ({convoId})=> setTypingMap(m=>{ const n={...m}; delete n[convoId]; return n; }));
+    s.on('message:edited', (msg)=>{
+      setMessages(ms=>{
+        const arr = ms[msg.convoId] || [];
+        return {...ms, [msg.convoId]: arr.map(m=> m.id===msg.id ? {...m, text: msg.text, edited:true} : m)};
+      });
+    });
+    s.on('message:deleted', ({messageId, convoId})=>{
+      setMessages(ms=>{
+        const arr = ms[convoId] || [];
+        return {...ms, [convoId]: arr.filter(m=> m.id!==messageId)};
+      });
+    });
+    s.on('message:reaction', ({messageId, reactions})=>{
+      setMessages(ms=>{
+        const newMs = {...ms};
+        for(const cid in newMs){
+          newMs[cid] = newMs[cid].map(m=> m.id===messageId ? {...m, reactions} : m);
+        }
+        return newMs;
+      });
+    });
+
+    s.on('typing:start', ({convoId, userId})=> setTypingMap(m=> ({...m, [convoId]: userId})));
+    s.on('typing:stop', ({convoId})=> setTypingMap(m=> { const n={...m}; delete n[convoId]; return n; }));
+
+    s.on('group:created', (g)=>{
+      setGroups(gs=> [...gs.filter(x=>x.id!==g.id), g]);
+    });
+    s.on('group:updated', (g)=>{
+      setGroups(gs=> gs.map(x=> x.id===g.id ? g : x));
+      if(activeConvo?.id===g.id) setActiveConvo({id:g.id, type:'group', group:g});
+    });
+    s.on('group:left', ({groupId})=>{
+      setGroups(gs=> gs.filter(x=>x.id!==groupId));
+      if(activeConvo?.id===groupId) setActiveConvo(null);
+    });
 
     // Calls
-    s.on('call:incoming', ({callId, from, type, groupId, group})=>{
-      setCall({callId, type, groupId, from, isIncoming:true, group});
-      // ring sound could be added
+    s.on('call:incoming', (data)=>{
+      setCall({callId: data.callId, isIncoming:true, from: data.from, type: data.type, groupId: data.groupId, group: data.group});
     });
-    s.on('call:inviting', ({callId, type})=>{
-      setCall({callId, type, isIncoming:false, isInviting:true});
-    });
-    s.on('call:started', ({callId, type, groupId})=>{
-      setCall(c=> c && c.callId===callId ? {...c, isInviting:false} : {callId, type, groupId, isIncoming:false});
-    });
-    s.on('call:accepted', ({callId, userId, user:u})=>{
-      // participant accepted, will initiate webrtc
-      setCallParticipants(prev=> ({...prev, [userId]: {...(prev[userId]||{}), user:u}}));
-    });
-    s.on('call:joined', ({callId})=>{
-      setCall(c=> c ? {...c, joined:true, isIncoming:false} : c);
+    s.on('call:accepted', ({callId, userId, user: u})=>{
+      if(call?.callId!==callId) return;
+      // Will create peer
     });
     s.on('call:rejected', ()=>{
       endCall(false);
-    });
-    s.on('call:participant:left', ({callId, userId})=>{
-      const pc = peersRef.current.get(userId);
-      if(pc) { pc.close(); peersRef.current.delete(userId); }
-      setCallParticipants(prev=>{ const n={...prev}; delete n[userId]; return n; });
+      alert('Звонок отклонен');
     });
     s.on('call:ended', ()=> endCall(false));
+    s.on('call:participant:left', ({userId})=>{
+      const pc = peersRef.current.get(userId);
+      if(pc) pc.close();
+      peersRef.current.delete(userId);
+      setRemoteStreams(rs=> { const n={...rs}; delete n[userId]; return n; });
+    });
 
-    // WebRTC
-    s.on('webrtc:offer', async ({callId, fromUserId, offer, fromUser})=>{
-      // if we haven't created peer yet
-      let pc = peersRef.current.get(fromUserId);
-      if(!pc){
-        pc = createPeer(fromUserId, callId);
-        peersRef.current.set(fromUserId, pc);
+    s.on('webrtc:offer', async ({callId, fromUserId, offer})=>{
+      if(!localStream){
+        try{
+          const stream = await navigator.mediaDevices.getUserMedia({video: call?.type!=='audio', audio: {echoCancellation:true, noiseSuppression: noiseSuppression}});
+          setLocalStream(stream);
+        }catch(e){ console.error(e); return; }
       }
-      await pc.setRemoteDescription(new RTCSessionDescription(offer));
+      const pc = createPeer(fromUserId, false);
+      await pc.setRemoteDescription(offer);
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
       s.emit('webrtc:answer', {callId, toUserId: fromUserId, answer});
-      setCallParticipants(prev=> ({...prev, [fromUserId]: {...(prev[fromUserId]||{}), user: fromUser}}));
     });
     s.on('webrtc:answer', async ({fromUserId, answer})=>{
       const pc = peersRef.current.get(fromUserId);
-      if(pc) await pc.setRemoteDescription(new RTCSessionDescription(answer));
+      if(pc) await pc.setRemoteDescription(answer);
     });
     s.on('webrtc:ice', async ({fromUserId, candidate})=>{
       const pc = peersRef.current.get(fromUserId);
-      if(pc && candidate) {
-        try{ await pc.addIceCandidate(new RTCIceCandidate(candidate)); }catch(e){ console.warn(e); }
-      }
+      if(pc && candidate) await pc.addIceCandidate(candidate).catch(()=>{});
     });
 
     return ()=> s.disconnect();
-  }, [token, user?.id]);
+  }, [token, user, call, localStream, noiseSuppression]);
 
-  // create peer helper
-  function createPeer(peerId, callId){
-    const pc = new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}, {urls:'stun:stun1.l.google.com:19302'}]});
-    pc.onicecandidate = (e)=>{
-      if(e.candidate) socket?.emit('webrtc:ice', {callId, toUserId: peerId, candidate: e.candidate});
-    };
-    pc.ontrack = (e)=>{
-      const stream = e.streams[0];
-      setCallParticipants(prev=> ({...prev, [peerId]: {...(prev[peerId]||{}), stream}}));
-    };
-    pc.onconnectionstatechange = ()=>{
-      if(pc.connectionState==='failed' || pc.connectionState==='disconnected'){
-        // retry?
-      }
-    };
-    // add local tracks if available
-    if(localStream){
-      localStream.getTracks().forEach(track=> pc.addTrack(track, localStream));
-    }
-    return pc;
-  }
-
-  async function startCall(targetUserId, type='video', groupId=null){
-    if(!socket) return;
-    // get media first
-    try{
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: type==='video' ? {width:{ideal:1280}, height:{ideal:720}} : false,
-        audio: {echoCancellation:true, noiseSuppression:true, autoGainControl:true}
-      });
-      setLocalStream(stream);
-      if(localVideoRef.current) localVideoRef.current.srcObject = stream;
-    }catch(e){
-      alert('Не удалось получить доступ к камере/микрофону: '+e.message);
-      return;
-    }
-
-    if(groupId){
-      socket.emit('call:invite', {type, groupId});
-    } else {
-      socket.emit('call:invite', {toUserId: targetUserId, type});
-    }
-    setCall({callId: null, type, groupId, isIncoming:false, isInviting:true, targetUserId});
-    setCallParticipants({});
-    peersRef.current.clear();
-  }
-
-  async function acceptCall(){
-    if(!call || !socket) return;
-    try{
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: call.type==='video' ? {width:{ideal:1280}, height:{ideal:720}} : false,
-        audio: true
-      });
-      setLocalStream(stream);
-      // for each existing participant, create offer
-      // For group, we need to know participants? Server will send accepted events, but we can just wait for offers.
-      // To initiate mesh, after joining, create offers to all known participants (excluding self)
-      socket.emit('call:accept', {callId: call.callId});
-      setCall(c=>({...c, isIncoming:false, joined:true}));
-      // If it's 1-1, the caller will create offer, but we also prepare to create peer when offer arrives
-      // For group, we should create offers to existing participants after short delay
-      setTimeout(()=>{
-        Object.keys(callParticipants).forEach(async pid=>{
-          if(pid===user.id) return;
-          let pc = peersRef.current.get(pid);
-          if(!pc){
-            pc = createPeer(pid, call.callId);
-            peersRef.current.set(pid, pc);
-          }
-          const offer = await pc.createOffer();
-          await pc.setLocalDescription(offer);
-          socket.emit('webrtc:offer', {callId: call.callId, toUserId: pid, offer});
-        });
-      }, 500);
-    }catch(e){
-      alert('Ошибка доступа к медиа: '+e.message);
-    }
-  }
-
-  // When localStream changes, add tracks to peers and handle offers for initiator
-  useEffect(()=>{
-    if(!localStream || !call || !socket) return;
-    // initiator: create offers to all participants that accepted
-    // For 1-1 inviting flow
-    if(call.isInviting && call.targetUserId){
-      const pid = call.targetUserId;
-      let pc = peersRef.current.get(pid);
-      if(!pc){
-        pc = createPeer(pid, call.callId || 'temp');
-        peersRef.current.set(pid, pc);
-      } else {
-        // replace tracks
-        const senders = pc.getSenders();
-        localStream.getTracks().forEach(track=>{
-          const sender = senders.find(s=> s.track && s.track.kind===track.kind);
-          if(sender) sender.replaceTrack(track);
-          else pc.addTrack(track, localStream);
-        });
-      }
-    }
-    // For group, also update
-    peersRef.current.forEach((pc, pid)=>{
-      const senders = pc.getSenders();
-      localStream.getTracks().forEach(track=>{
-        const sender = senders.find(s=> s.track && s.track.kind===track.kind);
-        if(sender) sender.replaceTrack(track);
-        else pc.addTrack(track, localStream);
-      });
-    });
-
-    // If callId is known and we are initiator, create offer after stream
-    if(call.callId && call.isInviting && call.targetUserId){
-      (async()=>{
-        const pc = peersRef.current.get(call.targetUserId);
-        if(pc){
-          const offer = await pc.createOffer();
-          await pc.setLocalDescription(offer);
-          socket.emit('webrtc:offer', {callId: call.callId, toUserId: call.targetUserId, offer});
-        }
-      })();
-    }
-  }, [localStream]);
-
-  // handle when new participant accepted, initiator creates offer
-  useEffect(()=>{
-    if(!socket || !call || !localStream) return;
-    // when callParticipants updates and we are initiator or already joined, create offer to new participant if not exists
-    Object.keys(callParticipants).forEach(async pid=>{
-      if(peersRef.current.has(pid)) return;
-      if(pid===user.id) return;
-      const pc = createPeer(pid, call.callId);
-      peersRef.current.set(pid, pc);
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      socket.emit('webrtc:offer', {callId: call.callId, toUserId: pid, offer});
-    });
-  }, [callParticipants]);
-
-  function endCall(emit=true){
-    if(emit && socket && call?.callId) socket.emit('call:leave', {callId: call.callId});
-    localStream?.getTracks().forEach(t=> t.stop());
-    screenStream?.getTracks().forEach(t=> t.stop());
-    peersRef.current.forEach(pc=> pc.close());
-    peersRef.current.clear();
-    setLocalStream(null);
-    setScreenStream(null);
-    setCall(null);
-    setCallParticipants({});
-    setIsMuted(false);
-    setIsCamOff(false);
-    setIsScreenSharing(false);
-  }
-
-  async function toggleMute(){
-    if(!localStream) return;
-    const audioTracks = localStream.getAudioTracks();
-    audioTracks.forEach(t=> t.enabled = !t.enabled);
-    setIsMuted(!audioTracks[0]?.enabled);
-  }
-  async function toggleCam(){
-    if(!localStream) return;
-    const videoTracks = localStream.getVideoTracks();
-    videoTracks.forEach(t=> t.enabled = !t.enabled);
-    setIsCamOff(!videoTracks[0]?.enabled);
-  }
-  async function toggleScreenShare(){
-    if(isScreenSharing){
-      // stop screen, restore cam
-      screenStream?.getTracks().forEach(t=> t.stop());
-      setScreenStream(null);
-      setIsScreenSharing(false);
-      // restore cam track
-      try{
-        const camStream = await navigator.mediaDevices.getUserMedia({video:{width:{ideal:1280}, height:{ideal:720}}, audio:false});
-        const videoTrack = camStream.getVideoTracks()[0];
-        // replace in localStream
-        const oldVideo = localStream.getVideoTracks()[0];
-        if(oldVideo) localStream.removeTrack(oldVideo);
-        localStream.addTrack(videoTrack);
-        setLocalStream(new MediaStream(localStream.getTracks()));
-        // replace in peers
-        peersRef.current.forEach(pc=>{
-          const sender = pc.getSenders().find(s=> s.track && s.track.kind==='video');
-          if(sender) sender.replaceTrack(videoTrack);
-        });
-        if(localVideoRef.current) localVideoRef.current.srcObject = localStream;
-      }catch(e){ console.warn(e); }
-    } else {
-      try{
-        const display = await navigator.mediaDevices.getDisplayMedia({
-          video: {width:{ideal:1920}, height:{ideal:1080}, frameRate:{ideal:30}, displaySurface:'monitor'},
-          audio: true
-        });
-        setScreenStream(display);
-        setIsScreenSharing(true);
-        const screenTrack = display.getVideoTracks()[0];
-        // replace track in all peers
-        peersRef.current.forEach(pc=>{
-          const sender = pc.getSenders().find(s=> s.track && s.track.kind==='video');
-          if(sender) sender.replaceTrack(screenTrack);
-          else pc.addTrack(screenTrack, display);
-        });
-        // show screen in local preview
-        if(localVideoRef.current) localVideoRef.current.srcObject = display;
-        screenTrack.onended = ()=> toggleScreenShare();
-      }catch(e){
-        alert('Не удалось включить демонстрацию: '+e.message);
-      }
-    }
-  }
-
-  // messaging
+  // Messages fetch when activeConvo changes
   useEffect(()=>{
     if(!activeConvo || !token) return;
     fetch(`${API}/api/messages/${activeConvo.id}`, {headers:{Authorization:`Bearer ${token}`}}).then(r=>r.json()).then(d=>{
-      if(d.messages) setMessages(prev=> ({...prev, [activeConvo.id]: d.messages}));
+      if(d.messages) setMessages(ms=> ({...ms, [activeConvo.id]: d.messages}));
     });
-  }, [activeConvo?.id]);
+  }, [activeConvo, token]);
 
   useEffect(()=>{
     messagesEndRef.current?.scrollIntoView({behavior:'smooth'});
   }, [messages, activeConvo]);
 
+  // Peer creation
+  function createPeer(peerId, isInitiator){
+    if(peersRef.current.has(peerId)) return peersRef.current.get(peerId);
+    const iceServers = JSON.parse(localStorage.getItem('cb_ice') || '[{"urls":"stun:stun.l.google.com:19302"}]');
+    const pc = new RTCPeerConnection({iceServers});
+    if(localStream){
+      localStream.getTracks().forEach(t=> pc.addTrack(t, localStream));
+    }
+    pc.onicecandidate = (e)=>{
+      if(e.candidate) socket?.emit('webrtc:ice', {callId: call?.callId, toUserId: peerId, candidate: e.candidate});
+    };
+    pc.ontrack = (e)=>{
+      setRemoteStreams(rs=> ({...rs, [peerId]: e.streams[0]}));
+    };
+    peersRef.current.set(peerId, pc);
+    if(isInitiator){
+      // Will create offer later
+    }
+    return pc;
+  }
+
+  async function startCall(targetUserId, type='video', groupId=null){
+    try{
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: type!=='audio' ? {width:{ideal:1280}, height:{ideal:720}} : false,
+        audio: {echoCancellation:true, noiseSuppression: noiseSuppression, autoGainControl:true}
+      });
+      setLocalStream(stream);
+      if(groupId){
+        socket.emit('call:invite', {type, groupId});
+        const members = groups.find(g=>g.id===groupId)?.members || [];
+        for(const m of members){
+          if(m.id===user.id) continue;
+          const pc = createPeer(m.id, true);
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+          socket.emit('webrtc:offer', {callId: call?.callId || 'temp', toUserId: m.id, offer});
+        }
+        setCall({callId: 'temp-'+Date.now(), type, groupId, isIncoming:false});
+      } else {
+        socket.emit('call:invite', {toUserId: targetUserId, type});
+        setCall({callId: 'temp-'+Date.now(), type, targetUserId, isIncoming:false});
+        // Peer will be created after accepted
+      }
+    }catch(e){
+      alert('Ошибка камеры/микрофона: '+e.message);
+    }
+  }
+
+  async function acceptCall(){
+    if(!call) return;
+    try{
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: call.type!=='audio',
+        audio: {echoCancellation:true, noiseSuppression: noiseSuppression}
+      });
+      setLocalStream(stream);
+      socket.emit('call:accept', {callId: call.callId});
+      setCall({...call, isIncoming:false});
+      if(call.groupId){
+        const members = groups.find(g=>g.id===call.groupId)?.members || [];
+        for(const m of members){
+          if(m.id===user.id) continue;
+          const pc = createPeer(m.id, true);
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+          socket.emit('webrtc:offer', {callId: call.callId, toUserId: m.id, offer});
+        }
+      } else if(call.from){
+        const pc = createPeer(call.from.id, true);
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        socket.emit('webrtc:offer', {callId: call.callId, toUserId: call.from.id, offer});
+      }
+    }catch(e){ alert(e.message); }
+  }
+
+  function endCall(emit=true){
+    if(emit && socket && call?.callId) socket.emit('call:leave', {callId: call.callId});
+    localStream?.getTracks().forEach(t=> t.stop());
+    setLocalStream(null);
+    setRemoteStreams({});
+    peersRef.current.forEach(pc=> pc.close());
+    peersRef.current.clear();
+    setCall(null);
+    setIsScreenSharing(false);
+    setIsRecording(false);
+  }
+
+  async function toggleScreen(){
+    if(!call) return;
+    if(isScreenSharing){
+      // Back to cam
+      try{
+        const camStream = await navigator.mediaDevices.getUserMedia({video:true, audio:true});
+        const videoTrack = camStream.getVideoTracks()[0];
+        peersRef.current.forEach(pc=>{
+          const sender = pc.getSenders().find(s=> s.track && s.track.kind==='video');
+          if(sender) sender.replaceTrack(videoTrack);
+        });
+        localStream?.getTracks().forEach(t=> t.stop());
+        setLocalStream(camStream);
+        setIsScreenSharing(false);
+      }catch{}
+    } else {
+      try{
+        const screenStream = await navigator.mediaDevices.getDisplayMedia({
+          video: {width:{ideal:1920}, height:{ideal:1080}, frameRate:{ideal:30}},
+          audio:true
+        });
+        const screenTrack = screenStream.getVideoTracks()[0];
+        peersRef.current.forEach(pc=>{
+          const sender = pc.getSenders().find(s=> s.track && s.track.kind==='video');
+          if(sender) sender.replaceTrack(screenTrack);
+        });
+        screenTrack.onended = ()=> toggleScreen();
+        setIsScreenSharing(true);
+        // Keep screen stream as local for preview
+        if(localVideoRef.current) localVideoRef.current.srcObject = screenStream;
+      }catch(e){ alert('Экран: '+e.message); }
+    }
+  }
+
+  function toggleMute(){
+    if(!localStream) return;
+    localStream.getAudioTracks().forEach(t=> t.enabled = !t.enabled);
+    setIsMuted(!isMuted);
+  }
+  function toggleCam(){
+    if(!localStream) return;
+    localStream.getVideoTracks().forEach(t=> t.enabled = !t.enabled);
+    setIsCamOff(!isCamOff);
+  }
+
+  function toggleRecording(){
+    if(isRecording){
+      mediaRecorderRef.current?.stop();
+      setIsRecording(false);
+    } else {
+      if(!localStream) return;
+      const recorder = new MediaRecorder(localStream, {mimeType:'video/webm'});
+      const chunks = [];
+      recorder.ondataavailable = e=> chunks.push(e.data);
+      recorder.onstop = ()=>{
+        const blob = new Blob(chunks, {type:'video/webm'});
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = `cbopka-${Date.now()}.webm`; a.click();
+      };
+      recorder.start();
+      mediaRecorderRef.current = recorder;
+      setIsRecording(true);
+    }
+  }
+
+  async function handleFileUpload(e){
+    const file = e.target.files[0];
+    if(!file) return;
+    const form = new FormData();
+    form.append('file', file);
+    try{
+      const res = await fetch(`${API}/api/upload`, {
+        method:'POST',
+        headers:{Authorization:`Bearer ${token}`},
+        body: form
+      });
+      const data = await res.json();
+      if(data.url){
+        socket.emit('message:send', {convoId: activeConvo.id, text: `📎 Файл: ${data.name}`, type:'file', meta: {url: data.url, name: data.name, mime: data.mime, size: data.size}});
+      }
+    }catch(err){ alert('Ошибка загрузки'); }
+  }
+
   function sendMessage(){
     if(!input.trim() || !activeConvo || !socket) return;
-    socket.emit('message:send', {convoId: activeConvo.id, text: input});
+    if(editingMsg){
+      socket.emit('message:edit', {messageId: editingMsg.id, text: input});
+      setEditingMsg(null);
+    } else {
+      socket.emit('message:send', {convoId: activeConvo.id, text: input});
+    }
     setInput('');
     socket.emit('typing:stop', {convoId: activeConvo.id});
   }
-  function handleTyping(e){
-    setInput(e.target.value);
-    if(!socket || !activeConvo) return;
-    socket.emit('typing:start', {convoId: activeConvo.id});
-    clearTimeout(typingTimeoutRef.current);
-    typingTimeoutRef.current = setTimeout(()=> socket.emit('typing:stop', {convoId: activeConvo.id}), 1500);
-  }
 
-  // search users
-  async function searchUsers(q){
-    if(!q || q.length<1){ setAllUsers([]); return; }
-    const res = await fetch(`${API}/api/users/search?q=${encodeURIComponent(q)}`, {headers:{Authorization:`Bearer ${token}`}});
-    const data = await res.json();
-    if(data.users) setAllUsers(data.users);
+  function searchUsers(q){
+    if(!q.trim()){ setAllUsers([]); return; }
+    fetch(`${API}/api/users/search?q=${encodeURIComponent(q)}`, {headers:{Authorization:`Bearer ${token}`}}).then(r=>r.json()).then(d=>{
+      if(d.users) setAllUsers(d.users);
+    });
   }
 
   const conversations = useMemo(()=>{
     const list = [];
-    // DMs from friends + any DM with messages
-    const dmIds = new Set();
-    Object.keys(messages).forEach(cid=>{
-      if(cid.includes('_')) dmIds.add(cid);
-    });
     friends.forEach(f=>{
-      const cid = [user.id, f.id].sort().join('_');
-      dmIds.add(cid);
+      const cid = getConvoId(user.id, f.id);
+      const msgs = messages[cid] || [];
+      list.push({id:cid, type:'dm', user:f, lastMessage: msgs[msgs.length-1], unread:0});
     });
-    dmIds.forEach(cid=>{
-      const parts = cid.split('_');
-      const otherId = parts.find(id=> id!==user.id);
-      const friend = friends.find(f=> f.id===otherId) || allUsers.find(u=> u.id===otherId);
-      const msgs = messages[cid]||[];
-      const last = msgs[msgs.length-1];
-      list.push({id: cid, type:'dm', user: friend || {id:otherId, username:'Неизвестный', avatar:''}, lastMessage: last, unread:0});
-    });
-    // groups
     groups.forEach(g=>{
-      const msgs = messages[g.id]||[];
-      const last = msgs[msgs.length-1];
-      list.push({id: g.id, type:'group', group:g, lastMessage:last});
+      const msgs = messages[g.id] || [];
+      list.push({id:g.id, type:'group', group:g, lastMessage: msgs[msgs.length-1], unread:0});
     });
-    // sort by last message time
     list.sort((a,b)=> (b.lastMessage?.at||0) - (a.lastMessage?.at||0));
     return list;
-  }, [friends, groups, messages, allUsers, user?.id]);
+  }, [friends, groups, messages, user?.id]);
 
   const filteredConvos = useMemo(()=>{
     if(tab==='friends') return [];
@@ -542,39 +522,51 @@ export default function App(){
     return conversations;
   }, [conversations, tab]);
 
+  const filteredMessages = useMemo(()=>{
+    if(!activeConvo) return [];
+    const msgs = messages[activeConvo.id] || [];
+    if(!searchMsg.trim()) return msgs;
+    return msgs.filter(m=> m.text.toLowerCase().includes(searchMsg.toLowerCase()));
+  }, [messages, activeConvo, searchMsg]);
+
   if(!user){
-    return <Auth onAuth={handleAuth} />;
+    return <Auth onAuth={handleAuth} onP2P={()=>{
+      localStorage.setItem('cb_p2p_mode','1');
+      setP2pMode(true);
+    }} />;
   }
 
   return (
-    <div className="h-[100dvh] w-screen bg-[#0f0f12] text-[#e6e6eb] flex overflow-hidden relative">
+    <div className={`h-[100dvh] w-screen bg-[#0f0f12] text-[#e6e6eb] flex overflow-hidden relative ${theme}`}>
       {/* Sidebar */}
       <div className={`w-[340px] shrink-0 bg-[#15151a] border-r border-[#23232a] flex flex-col z-20 transition-transform duration-300 lg:translate-x-0 ${showSidebar ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'} absolute lg:relative h-full`}>
-        {/* Profile header */}
         <div className="p-4 flex items-center gap-3 border-b border-[#23232a]">
           <img src={user.avatar} className="w-10 h-10 rounded-full object-cover bg-[#232329]" />
           <div className="flex-1 min-w-0">
             <div className="font-semibold text-[15px] truncate">{user.username}</div>
-            <div className="text-[12px] text-[#00d084] flex items-center gap-1"><span className="w-2 h-2 bg-[#00d084] rounded-full inline-block"></span> в сети • Cbopka</div>
+            <div className="text-[12px] text-[#00d084] flex items-center gap-1"><span className="w-2 h-2 bg-[#00d084] rounded-full inline-block"></span> в сети • {user.customStatus||'Cbopka'}</div>
           </div>
           <button onClick={()=>setShowProfile(true)} className="w-8 h-8 rounded-full bg-[#232329] flex items-center justify-center hover:bg-[#2a2a33]">⚙️</button>
           <button onClick={()=>setShowSidebar(false)} className="lg:hidden w-8 h-8 rounded-full bg-[#232329] flex items-center justify-center">✕</button>
         </div>
 
-        {/* Tabs */}
         <div className="p-3 flex gap-2">
           <button onClick={()=>setTab('chats')} className={`flex-1 py-2 rounded-xl text-[13px] font-semibold transition ${tab==='chats'?'bg-white text-black':'bg-[#1e1e24] text-[#9a9aa3] hover:bg-[#232329]'}`}>Чаты</button>
           <button onClick={()=>setTab('friends')} className={`flex-1 py-2 rounded-xl text-[13px] font-semibold transition ${tab==='friends'?'bg-white text-black':'bg-[#1e1e24] text-[#9a9aa3] hover:bg-[#232329]'}`}>Друзья</button>
           <button onClick={()=>setTab('groups')} className={`flex-1 py-2 rounded-xl text-[13px] font-semibold transition ${tab==='groups'?'bg-white text-black':'bg-[#1e1e24] text-[#9a9aa3] hover:bg-[#232329]'}`}>Группы</button>
         </div>
 
-        {/* Actions */}
         <div className="px-3 pb-3 flex gap-2">
           <button onClick={()=>setShowAddFriend(true)} className="flex-1 bg-[#7c5cff] hover:bg-[#6b4df0] text-white rounded-xl py-2.5 text-[13px] font-semibold flex items-center justify-center gap-1.5"><span>＋</span> Друга</button>
           <button onClick={()=>setShowCreateGroup(true)} className="flex-1 bg-[#232329] hover:bg-[#2a2a33] border border-[#2a2a33] rounded-xl py-2.5 text-[13px] font-semibold">＋ Группу</button>
         </div>
+        <div className="px-3 pb-2">
+          <button onClick={()=>{
+            localStorage.setItem('cb_p2p_mode','1');
+            setP2pMode(true);
+          }} className="w-full bg-[#00d084]/10 hover:bg-[#00d084]/20 border border-[#00d084]/20 text-[#00d084] rounded-xl py-2.5 text-[12px] font-semibold">⚡ P2P без сервера — сразу общаться</button>
+        </div>
 
-        {/* Search */}
         <div className="px-3 pb-3">
           <div className="relative">
             <span className="absolute left-3 top-1/2 -translate-y-1/2 text-[#5a5a66]">🔍</span>
@@ -598,251 +590,171 @@ export default function App(){
           )}
         </div>
 
-        {/* Lists */}
-        <div className="flex-1 overflow-y-auto px-2 pb-2 space-y-4">
+        <div className="flex-1 overflow-auto px-2 pb-2 space-y-1">
           {tab==='friends' ? (
             <>
               {incomingReq.length>0 && (
-                <div>
-                  <div className="text-[11px] font-bold text-[#9a9aa3] uppercase tracking-wider px-2 py-2">Заявки • {incomingReq.length}</div>
+                <div className="px-2 py-2">
+                  <div className="text-[11px] text-[#9a9aa3] font-semibold uppercase tracking-wider mb-2">Заявки • {incomingReq.length}</div>
                   {incomingReq.map(r=>(
-                    <div key={r.id} className="flex items-center gap-2 p-2.5 rounded-xl bg-[#1e1e24] border border-[#2a2a33] mb-2">
-                      <img src={r.fromUser.avatar} className="w-9 h-9 rounded-full" />
-                      <div className="flex-1 min-w-0"><div className="text-[13px] font-semibold">{r.fromUser.username}</div><div className="text-[11px] text-[#9a9aa3]">хочет дружить</div></div>
+                    <div key={r.id} className="flex items-center gap-2 bg-[#1e1e24] border border-[#2a2a33] rounded-xl p-2.5 mb-2">
+                      <img src={r.fromUser?.avatar} className="w-8 h-8 rounded-full" />
+                      <div className="flex-1 min-w-0"><div className="text-[13px] font-medium truncate">{r.fromUser?.username}</div><div className="text-[11px] text-[#9a9aa3]">хочет дружить</div></div>
                       <button onClick={()=>socket.emit('friends:accept',{requestId:r.id})} className="w-7 h-7 rounded-full bg-[#00d084] text-black font-bold">✓</button>
                       <button onClick={()=>socket.emit('friends:reject',{requestId:r.id})} className="w-7 h-7 rounded-full bg-[#2a2a33]">✕</button>
                     </div>
                   ))}
                 </div>
               )}
-              <div>
-                <div className="text-[11px] font-bold text-[#9a9aa3] uppercase tracking-wider px-2 py-2">Друзья • {friends.length}</div>
+              <div className="px-2">
+                <div className="text-[11px] text-[#9a9aa3] font-semibold uppercase tracking-wider mb-2">Друзья • {friends.length}</div>
                 {friends.map(f=>(
-                  <div key={f.id} className={`group flex items-center gap-3 p-2.5 rounded-xl hover:bg-[#1e1e24] cursor-pointer transition ${activeConvo?.id=== [user.id,f.id].sort().join('_') ? 'bg-[#232329] border border-[#2a2a33]' : ''}`} onClick={()=>{
+                  <div key={f.id} onClick={()=>{
                     const cid = [user.id, f.id].sort().join('_');
                     setActiveConvo({id:cid, type:'dm', user:f});
                     setShowSidebar(false);
-                  }}>
-                    <div className="relative"><img src={f.avatar} className="w-10 h-10 rounded-full object-cover" /><span className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-[#15151a] ${onlineMap[f.id] ? 'bg-[#00d084]' : 'bg-[#5a5a66]'}`}></span></div>
-                    <div className="flex-1 min-w-0"><div className="text-[14px] font-medium truncate flex items-center gap-1.5">{f.username} {onlineMap[f.id] && <span className="w-1.5 h-1.5 bg-[#00d084] rounded-full"></span>}</div><div className="text-[12px] text-[#9a9aa3] truncate">{onlineMap[f.id] ? 'в сети' : 'не в сети'}</div></div>
-                    <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition">
-                      <button onClick={(e)=>{ e.stopPropagation(); startCall(f.id,'audio'); }} className="w-8 h-8 rounded-full bg-[#232329] hover:bg-[#2a2a33] flex items-center justify-center">📞</button>
-                      <button onClick={(e)=>{ e.stopPropagation(); startCall(f.id,'video'); }} className="w-8 h-8 rounded-full bg-[#232329] hover:bg-[#2a2a33] flex items-center justify-center">🎥</button>
-                    </div>
+                  }} className={`flex items-center gap-3 p-2.5 rounded-xl cursor-pointer hover:bg-[#1e1e24] transition ${activeConvo?.id===getConvoId(user.id,f.id)?'bg-[#1e1e24]':''}`}>
+                    <div className="relative"><img src={f.avatar} className="w-9 h-9 rounded-full" /><span className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-[#15151a] ${onlineMap[f.id]?'bg-[#00d084]':'bg-[#5a5a66]'}`}></span></div>
+                    <div className="flex-1 min-w-0"><div className="text-[13px] font-medium truncate">{f.username}</div><div className="text-[11px] text-[#9a9aa3] truncate">{onlineMap[f.id]?'в сети':'оффлайн'} • {f.customStatus||f.bio}</div></div>
                   </div>
                 ))}
-                {friends.length===0 && <div className="text-center py-10 text-[#5a5a66] text-[13px]">Пока нет друзей.<br/>Добавь по нику выше.</div>}
               </div>
             </>
           ) : (
-            <>
-              {tab!=='groups' && friends.length>0 && (
-                <div>
-                  <div className="text-[11px] font-bold text-[#9a9aa3] uppercase tracking-wider px-2 py-1">Быстрый доступ</div>
-                  <div className="flex gap-2 overflow-x-auto py-2 px-1">
-                    {friends.slice(0,8).map(f=>(
-                      <button key={f.id} onClick={()=>{
-                        const cid = [user.id, f.id].sort().join('_');
-                        setActiveConvo({id:cid, type:'dm', user:f});
-                        setShowSidebar(false);
-                      }} className="flex flex-col items-center gap-1.5 min-w-[56px]">
-                        <div className="relative"><img src={f.avatar} className="w-12 h-12 rounded-full border-2 border-[#23232a]" /><span className={`absolute bottom-0 right-0 w-3 h-3 rounded-full border-2 border-[#15151a] ${onlineMap[f.id]?'bg-[#00d084]':'bg-[#5a5a66]'}`}></span></div>
-                        <span className="text-[11px] truncate max-w-[56px]">{f.username}</span>
-                      </button>
-                    ))}
-                  </div>
+            filteredConvos.map(c=>(
+              <div key={c.id} onClick={()=>{setActiveConvo(c); setShowSidebar(false);}} className={`flex items-center gap-3 p-2.5 rounded-xl cursor-pointer hover:bg-[#1e1e24] transition ${activeConvo?.id===c.id?'bg-[#1e1e24]':''}`}>
+                <img src={c.type==='dm'?c.user.avatar:c.group.avatar} className="w-9 h-9 rounded-full object-cover" />
+                <div className="flex-1 min-w-0">
+                  <div className="text-[13px] font-medium truncate">{c.type==='dm'?c.user.username:c.group.name}</div>
+                  <div className="text-[11px] text-[#9a9aa3] truncate">{typingMap[c.id] ? 'печатает...' : c.lastMessage ? `${c.lastMessage.from===user.id?'Вы: ':''}${c.lastMessage.text.slice(0,30)}` : 'Нет сообщений'}</div>
                 </div>
-              )}
-
-              <div>
-                <div className="text-[11px] font-bold text-[#9a9aa3] uppercase tracking-wider px-2 py-2 flex items-center justify-between"><span>{tab==='groups'?'Группы':'Чаты'} • {filteredConvos.length}</span></div>
-                {filteredConvos.map(c=>(
-                  <div key={c.id} onClick={()=>{ setActiveConvo(c); setShowSidebar(false); }} className={`flex items-center gap-3 p-3 rounded-xl cursor-pointer transition border ${activeConvo?.id===c.id ? 'bg-[#232329] border-[#3a3a44] shadow' : 'border-transparent hover:bg-[#1e1e24] hover:border-[#23232a]'}`}>
-                    {c.type==='dm' ? (
-                      <>
-                        <div className="relative"><img src={c.user.avatar} className="w-11 h-11 rounded-full object-cover" /><span className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-[#15151a] ${onlineMap[c.user.id]?'bg-[#00d084]':'bg-[#5a5a66]'}`}></span></div>
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center justify-between"><span className="font-medium text-[14px] truncate">{c.user.username}</span><span className="text-[11px] text-[#5a5a66]">{c.lastMessage ? new Date(c.lastMessage.at).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) : ''}</span></div>
-                          <div className="text-[12px] text-[#9a9aa3] truncate">{typingMap[c.id] ? <span className="text-[#7c5cff]">печатает...</span> : c.lastMessage ? `${c.lastMessage.from===user.id?'Вы: ':''}${c.lastMessage.text}` : 'Нет сообщений'}</div>
-                        </div>
-                      </>
-                    ) : (
-                      <>
-                        <img src={c.group.avatar} className="w-11 h-11 rounded-xl object-cover bg-[#232329]" />
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center justify-between"><span className="font-medium text-[14px] truncate">#{c.group.name}</span><span className="text-[11px] text-[#5a5a66]">{c.group.members.length} чел</span></div>
-                          <div className="text-[12px] text-[#9a9aa3] truncate">{typingMap[c.id] ? 'печатает...' : c.lastMessage ? c.lastMessage.text : c.group.description || 'Групповой чат'}</div>
-                        </div>
-                      </>
-                    )}
-                  </div>
-                ))}
-                {filteredConvos.length===0 && <div className="text-center py-12 text-[#5a5a66] text-[13px]">Нет чатов.<br/>Начни с добавления друга.</div>}
+                <div className="text-[10px] text-[#5a5a66]">{c.lastMessage ? new Date(c.lastMessage.at).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) : ''}</div>
               </div>
-
-              {tab==='chats' && groups.length>0 && (
-                <div>
-                  <div className="text-[11px] font-bold text-[#9a9aa3] uppercase tracking-wider px-2 py-2">Твои группы</div>
-                  {groups.map(g=>(
-                    <div key={g.id} onClick={()=>{ setActiveConvo({id:g.id, type:'group', group:g}); setShowSidebar(false); }} className={`flex items-center gap-3 p-2.5 rounded-xl hover:bg-[#1e1e24] cursor-pointer ${activeConvo?.id===g.id?'bg-[#232329] border border-[#2a2a33]':''}`}>
-                      <img src={g.avatar} className="w-9 h-9 rounded-xl" />
-                      <div className="flex-1 min-w-0"><div className="text-[13px] font-medium truncate">{g.name}</div><div className="text-[11px] text-[#9a9aa3]">{g.members.length} участников</div></div>
-                      <button onClick={(e)=>{ e.stopPropagation(); startCall(null,'video', g.id); }} className="w-8 h-8 rounded-full bg-[#232329] flex items-center justify-center">🎥</button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </>
+            ))
           )}
         </div>
 
-        <div className="p-3 border-t border-[#23232a] flex items-center gap-2 text-[11px] text-[#5a5a66]">
-          <span className="w-2 h-2 bg-[#00d084] rounded-full animate-pulse"></span> Cbopka работает • P2P звонки • 1080p экран
-          <button onClick={logout} className="ml-auto text-[11px] text-[#9a9aa3] hover:text-white">Выйти</button>
+        <div className="p-3 border-t border-[#23232a] flex items-center gap-2">
+          <button onClick={()=>setTheme(theme==='dark'?'light': theme==='light'?'amoled':'dark')} className="w-8 h-8 rounded-full bg-[#1e1e24] flex items-center justify-center text-[12px]">{theme==='dark'?'🌙':theme==='light'?'☀️':'🖤'}</button>
+          <div className="flex-1 text-[11px] text-[#5a5a66]">Тема: {theme} • SQLite • P2P</div>
+          <button onClick={logout} className="text-[11px] text-[#9a9aa3] hover:text-white">Выйти</button>
         </div>
       </div>
 
-      {/* Main Chat */}
-      <div className="flex-1 flex flex-col min-w-0 bg-[#0f0f12] relative">
-        {/* Chat header */}
-        {activeConvo ? (
-          <div className="h-[64px] shrink-0 bg-[#15151a]/80 backdrop-blur-xl border-b border-[#23232a] flex items-center gap-3 px-4">
-            <button onClick={()=>setShowSidebar(true)} className="lg:hidden w-9 h-9 rounded-full bg-[#232329] flex items-center justify-center">☰</button>
-            {activeConvo.type==='dm' ? (
-              <>
-                <img src={activeConvo.user.avatar} className="w-9 h-9 rounded-full" />
-                <div className="flex-1 min-w-0">
-                  <div className="font-semibold text-[14px] truncate flex items-center gap-2">{activeConvo.user.username} {onlineMap[activeConvo.user.id] && <span className="text-[11px] bg-[#00d084]/20 text-[#00d084] px-2 py-0.5 rounded-full">online</span>}</div>
-                  <div className="text-[12px] text-[#9a9aa3] truncate">{onlineMap[activeConvo.user.id] ? 'в сети' : activeConvo.user.bio || 'оффлайн'}</div>
-                </div>
-              </>
-            ) : (
-              <>
-                <img src={activeConvo.group.avatar} className="w-9 h-9 rounded-xl" />
-                <div className="flex-1 min-w-0">
-                  <div className="font-semibold text-[14px] truncate">{activeConvo.group.name}</div>
-                  <div className="text-[12px] text-[#9a9aa3] truncate">{activeConvo.group.members.length} участников • {activeConvo.group.description}</div>
-                </div>
-              </>
-            )}
-            <div className="flex items-center gap-2">
-              <button onClick={()=> activeConvo.type==='dm' ? startCall(activeConvo.user.id,'audio') : startCall(null,'audio', activeConvo.id)} className="w-9 h-9 rounded-full bg-[#232329] hover:bg-[#2a2a33] flex items-center justify-center">📞</button>
-              <button onClick={()=> activeConvo.type==='dm' ? startCall(activeConvo.user.id,'video') : startCall(null,'video', activeConvo.id)} className="w-9 h-9 rounded-full bg-[#7c5cff] hover:bg-[#6b4df0] flex items-center justify-center shadow-[0_0_15px_rgba(124,92,255,0.3)]">🎥</button>
-              <button onClick={()=>setShowRight(!showRight)} className="w-9 h-9 rounded-full bg-[#232329] hover:bg-[#2a2a33] flex items-center justify-center">ℹ️</button>
+      {/* Chat area */}
+      <div className="flex-1 flex flex-col bg-[#0f0f12] relative">
+        {!activeConvo ? (
+          <div className="flex-1 flex flex-col items-center justify-center p-8 text-center">
+            <div className="w-20 h-20 rounded-[24px] bg-[#7c5cff]/20 flex items-center justify-center mb-4 text-3xl">💬</div>
+            <h2 className="text-[20px] font-bold">Выбери чат</h2>
+            <p className="text-[#9a9aa3] text-[14px] mt-2 max-w-[360px]">Добавь друга, создай группу или используй P2P без сервера — сразу общаться по ID, без общего WiFi!</p>
+            <div className="mt-6 grid grid-cols-2 gap-3 max-w-[360px] w-full">
+              <div className="bg-[#1a1a1f] border border-[#2a2a33] rounded-2xl p-4 text-left"><div className="text-[13px] font-semibold">📎 Файлы</div><div className="text-[11px] text-[#9a9aa3] mt-1">До 100MB, фото, видео, доки</div></div>
+              <div className="bg-[#1a1a1f] border border-[#2a2a33] rounded-2xl p-4 text-left"><div className="text-[13px] font-semibold">😊 Реакции</div><div className="text-[11px] text-[#9a9aa3] mt-1">Эмодзи на сообщения</div></div>
+              <div className="bg-[#1a1a1f] border border-[#2a2a33] rounded-2xl p-4 text-left"><div className="text-[13px] font-semibold">✏️ Правка</div><div className="text-[11px] text-[#9a9aa3] mt-1">Редактируй и удаляй</div></div>
+              <div className="bg-[#1a1a1f] border border-[#2a2a33] rounded-2xl p-4 text-left"><div className="text-[13px] font-semibold">🔗 Инвайты</div><div className="text-[11px] text-[#9a9aa3] mt-1">Ссылки-приглашения</div></div>
             </div>
           </div>
         ) : (
-          <div className="h-[64px] shrink-0 bg-[#15151a]/80 backdrop-blur-xl border-b border-[#23232a] flex items-center px-4 gap-3">
-            <button onClick={()=>setShowSidebar(true)} className="lg:hidden w-9 h-9 rounded-full bg-[#232329] flex items-center justify-center">☰</button>
-            <div className="font-semibold">Выбери чат</div>
-          </div>
-        )}
-
-        {/* Messages */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-[radial-gradient(ellipse_at_top,_rgba(124,92,255,0.08),_transparent_60%)]">
-          {!activeConvo ? (
-            <div className="h-full flex flex-col items-center justify-center text-center p-8">
-              <div className="w-20 h-20 rounded-[24px] bg-[#1a1a1f] border border-[#2a2a33] flex items-center justify-center text-3xl mb-4">💬</div>
-              <h2 className="text-[20px] font-bold">Добро пожаловать в Cbopka</h2>
-              <p className="text-[#9a9aa3] text-[14px] mt-2 max-w-[320px]">Переписывайся, создавай группы, звони с видео и делись экраном в 1080p. Всё работает прямо в браузере на ПК и телефоне.</p>
-              <div className="grid grid-cols-3 gap-3 mt-6 w-full max-w-[360px]">
-                <div className="bg-[#1a1a1f] border border-[#2a2a33] rounded-2xl p-4"><div className="text-[20px]">👥</div><div className="text-[12px] font-semibold mt-2">Друзья</div><div className="text-[11px] text-[#9a9aa3]">Добавляй по нику</div></div>
-                <div className="bg-[#1a1a1f] border border-[#2a2a33] rounded-2xl p-4"><div className="text-[20px]">🎥</div><div className="text-[12px] font-semibold mt-2">Звонки</div><div className="text-[11px] text-[#9a9aa3]">Видео и голос</div></div>
-                <div className="bg-[#1a1a1f] border border-[#2a2a33] rounded-2xl p-4"><div className="text-[20px]">🖥️</div><div className="text-[12px] font-semibold mt-2">Экран 1080p</div><div className="text-[11px] text-[#9a9aa3]">Демо в звонке</div></div>
+          <>
+            <div className="h-[56px] border-b border-[#23232a] bg-[#15151a] flex items-center px-4 gap-3">
+              <button onClick={()=>setShowSidebar(true)} className="lg:hidden w-8 h-8 rounded-full bg-[#1e1e24] flex items-center justify-center">☰</button>
+              <img src={activeConvo.type==='dm'?activeConvo.user.avatar:activeConvo.group.avatar} className="w-8 h-8 rounded-full" />
+              <div className="flex-1 min-w-0">
+                <div className="font-semibold text-[14px] truncate">{activeConvo.type==='dm'?activeConvo.user.username:activeConvo.group.name}</div>
+                <div className="text-[11px] text-[#9a9aa3] truncate">{activeConvo.type==='dm' ? (onlineMap[activeConvo.user.id]?'в сети':'оффлайн') : `${activeConvo.group.members?.length||0} участников`}</div>
               </div>
-              <button onClick={()=>setShowAddFriend(true)} className="mt-6 bg-white text-black font-semibold px-6 py-3 rounded-full text-[14px]">Найти друзей</button>
+              <div className="flex items-center gap-2">
+                <input value={searchMsg} onChange={e=>setSearchMsg(e.target.value)} placeholder="Поиск..." className="hidden md:block bg-[#1e1e24] border border-[#2a2a33] rounded-full px-3 py-1.5 text-[12px] w-[140px] outline-none focus:border-[#7c5cff]" />
+                <button onClick={()=>startCall(activeConvo.type==='dm'?activeConvo.user.id:null, 'audio', activeConvo.type==='group'?activeConvo.id:null)} className="w-8 h-8 rounded-full bg-[#1e1e24] hover:bg-[#232329] flex items-center justify-center">📞</button>
+                <button onClick={()=>startCall(activeConvo.type==='dm'?activeConvo.user.id:null, 'video', activeConvo.type==='group'?activeConvo.id:null)} className="w-8 h-8 rounded-full bg-[#7c5cff] hover:bg-[#6b4df0] flex items-center justify-center">🎥</button>
+                <button onClick={()=>setShowRight(!showRight)} className="w-8 h-8 rounded-full bg-[#1e1e24] hover:bg-[#232329] flex items-center justify-center">ℹ️</button>
+              </div>
             </div>
-          ) : (
-            <>
-              {(messages[activeConvo.id]||[]).map(m=>{
-                const isMe = m.from===user.id;
-                const fromUser = activeConvo.type==='group' ? (activeConvo.group.members.find(x=>x.id===m.from) || {username:'?', avatar:''}) : activeConvo.user;
+
+            <div className="flex-1 overflow-auto p-4 space-y-3" onDragOver={e=>e.preventDefault()} onDrop={e=>{ e.preventDefault(); if(e.dataTransfer.files[0]){ fileInputRef.current.files = e.dataTransfer.files; handleFileUpload({target:{files:e.dataTransfer.files}}); }}}>
+              {filteredMessages.map(m=>{
+                const isMe = m.from===user.id || m.fromId===user.id;
+                const fromUser = isMe ? user : (activeConvo.type==='dm' ? activeConvo.user : groups.find(g=>g.id===activeConvo.id)?.members?.find(x=>x.id===(m.from||m.fromId)));
                 return (
-                  <div key={m.id} className={`flex gap-2 ${isMe ? 'justify-end' : 'justify-start'}`}>
-                    {!isMe && activeConvo.type==='group' && <img src={fromUser.avatar} className="w-7 h-7 rounded-full mt-1" />}
-                    <div className={`max-w-[75%] rounded-[18px] px-4 py-2.5 text-[14px] leading-[1.4] shadow-sm ${isMe ? 'bg-[#7c5cff] text-white rounded-br-[6px]' : 'bg-[#1e1e24] border border-[#2a2a33] text-[#e6e6eb] rounded-bl-[6px]'}`}>
-                      {activeConvo.type==='group' && !isMe && <div className="text-[11px] font-bold opacity-80 mb-0.5">{fromUser.username}</div>}
-                      <div className="whitespace-pre-wrap break-words">{m.text}</div>
-                      <div className={`text-[10px] mt-1 mono ${isMe ? 'text-white/70' : 'text-[#9a9aa3]'}`}>{new Date(m.at).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</div>
+                  <div key={m.id} className={`group flex gap-2 ${isMe?'justify-end':'justify-start'}`}>
+                    {!isMe && <img src={fromUser?.avatar} className="w-7 h-7 rounded-full mt-1 shrink-0" />}
+                    <div className={`relative max-w-[70%] ${isMe?'order-first':''}`}>
+                      <div className={`px-3.5 py-2.5 rounded-2xl text-[13px] leading-[1.4] break-words ${isMe?'bg-[#7c5cff] text-white rounded-br-[4px]':'bg-[#1e1e24] border border-[#2a2a33] rounded-bl-[4px]'}`}>
+                        {m.type==='file' && m.meta ? (
+                          <div>
+                            <div className="font-semibold">📎 {m.meta.name}</div>
+                            <div className="text-[11px] opacity-80">{(m.meta.size/1024).toFixed(1)} KB • {m.meta.mime}</div>
+                            <a href={m.meta.url} target="_blank" rel="noreferrer" className="mt-2 inline-block bg-white/20 hover:bg-white/30 px-3 py-1.5 rounded-full text-[12px]">Скачать</a>
+                          </div>
+                        ) : (
+                          <>{m.text}{m.edited && <span className="text-[10px] opacity-60 ml-2">(изменено)</span>}</>
+                        )}
+                      </div>
+                      {m.reactions && Object.keys(m.reactions).length>0 && (
+                        <div className="flex gap-1 mt-1 flex-wrap">
+                          {Object.entries(m.reactions).map(([emoji, users])=>(
+                            <span key={emoji} className="bg-[#1e1e24] border border-[#2a2a33] rounded-full px-2 py-0.5 text-[11px]">{emoji} {users.length}</span>
+                          ))}
+                        </div>
+                      )}
+                      <div className="flex items-center gap-2 mt-1 px-1">
+                        <span className="text-[10px] text-[#5a5a66]">{new Date(m.at).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</span>
+                        <div className="hidden group-hover:flex gap-1">
+                          <button onClick={()=>socket.emit('message:react',{messageId:m.id, emoji:'❤️'})} className="text-[12px] hover:scale-110">❤️</button>
+                          <button onClick={()=>socket.emit('message:react',{messageId:m.id, emoji:'👍'})} className="text-[12px] hover:scale-110">👍</button>
+                          <button onClick={()=>socket.emit('message:react',{messageId:m.id, emoji:'😂'})} className="text-[12px] hover:scale-110">😂</button>
+                          {isMe && <>
+                            <button onClick={()=>{setEditingMsg(m); setInput(m.text);}} className="text-[10px] text-[#9a9aa3] hover:text-white">✏️</button>
+                            <button onClick={()=>socket.emit('message:delete',{messageId:m.id})} className="text-[10px] text-[#9a9aa3] hover:text-red-400">🗑️</button>
+                          </>}
+                        </div>
+                      </div>
                     </div>
                   </div>
                 );
               })}
-              {typingMap[activeConvo.id] && (
-                <div className="flex gap-2 items-center">
-                  <div className="bg-[#1e1e24] border border-[#2a2a33] rounded-full px-4 py-2 text-[12px] text-[#9a9aa3] flex items-center gap-2">
-                    <span className="flex gap-1"><span className="w-1 h-1 bg-[#9a9aa3] rounded-full animate-bounce"></span><span className="w-1 h-1 bg-[#9a9aa3] rounded-full animate-bounce [animation-delay:0.1s]"></span><span className="w-1 h-1 bg-[#9a9aa3] rounded-full animate-bounce [animation-delay:0.2s]"></span></span>
-                    печатает...
-                  </div>
-                </div>
-              )}
+              {typingMap[activeConvo.id] && <div className="text-[11px] text-[#9a9aa3] px-2">печатает...</div>}
               <div ref={messagesEndRef} />
-            </>
-          )}
-        </div>
+            </div>
 
-        {/* Input */}
-        {activeConvo && (
-          <div className="p-3 bg-[#15151a] border-t border-[#23232a] shrink-0">
-            <div className="flex items-end gap-2 max-w-[900px] mx-auto w-full">
-              <div className="flex-1 bg-[#1e1e24] border border-[#2a2a33] rounded-[20px] flex items-end gap-2 px-3 py-2 focus-within:border-[#7c5cff] transition">
-                <textarea value={input} onChange={handleTyping} onKeyDown={e=>{ if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); sendMessage(); } }} placeholder="Сообщение..." rows={1} className="flex-1 bg-transparent outline-none text-[14px] py-2.5 resize-none max-h-[120px] placeholder:text-[#5a5a66]" />
-                <button onClick={sendMessage} className="w-9 h-9 rounded-full bg-[#7c5cff] hover:bg-[#6b4df0] flex items-center justify-center shrink-0 mb-0.5">➤</button>
+            <div className="p-3 border-t border-[#23232a] bg-[#15151a]">
+              {editingMsg && <div className="mb-2 bg-[#1e1e24] border border-[#2a2a33] rounded-xl px-3 py-2 flex items-center justify-between"><span className="text-[12px] text-[#9a9aa3]">Редактирование: {editingMsg.text.slice(0,30)}</span><button onClick={()=>{setEditingMsg(null); setInput('');}} className="text-[12px]">✕</button></div>}
+              <div className="flex items-end gap-2">
+                <button onClick={()=>fileInputRef.current.click()} className="w-10 h-10 rounded-full bg-[#1e1e24] hover:bg-[#232329] flex items-center justify-center shrink-0">📎</button>
+                <input type="file" ref={fileInputRef} onChange={handleFileUpload} className="hidden" />
+                <div className="flex-1 relative">
+                  <input value={input} onChange={e=>{setInput(e.target.value); if(e.target.value.trim()){ socket.emit('typing:start',{convoId:activeConvo.id}); if(typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current); typingTimeoutRef.current=setTimeout(()=>socket.emit('typing:stop',{convoId:activeConvo.id}),1500); }}} onKeyDown={e=> e.key==='Enter' && !e.shiftKey && (e.preventDefault(), sendMessage())} placeholder="Сообщение..." className="w-full bg-[#1e1e24] border border-[#2a2a33] rounded-[20px] pl-4 pr-12 py-3 text-[14px] outline-none focus:border-[#7c5cff] resize-none" />
+                  <button onClick={sendMessage} className="absolute right-1 top-1 w-8 h-8 rounded-full bg-[#7c5cff] hover:bg-[#6b4df0] flex items-center justify-center">➤</button>
+                </div>
               </div>
             </div>
-            <div className="text-center text-[10px] text-[#5a5a66] mt-2">Enter — отправить, Shift+Enter — новая строка • Шифрование P2P в звонках</div>
-          </div>
+          </>
         )}
       </div>
 
       {/* Right panel */}
-      {activeConvo && showRight && (
-        <div className="w-[300px] shrink-0 bg-[#15151a] border-l border-[#23232a] flex flex-col absolute lg:relative right-0 top-0 h-full z-10">
+      {showRight && activeConvo && (
+        <div className="w-[300px] shrink-0 bg-[#15151a] border-l border-[#23232a] flex flex-col absolute lg:relative right-0 top-0 h-full z-30">
           <div className="p-4 border-b border-[#23232a] flex items-center justify-between">
             <div className="font-semibold text-[14px]">Инфо</div>
-            <button onClick={()=>setShowRight(false)} className="w-8 h-8 rounded-full bg-[#232329]">✕</button>
+            <button onClick={()=>setShowRight(false)} className="w-7 h-7 rounded-full bg-[#1e1e24] flex items-center justify-center">✕</button>
           </div>
-          <div className="p-4 flex-1 overflow-y-auto">
+          <div className="p-4 flex flex-col items-center">
+            <img src={activeConvo.type==='dm'?activeConvo.user.avatar:activeConvo.group.avatar} className="w-20 h-20 rounded-full object-cover" />
+            <div className="font-semibold mt-3">{activeConvo.type==='dm'?activeConvo.user.username:activeConvo.group.name}</div>
+            <div className="text-[12px] text-[#9a9aa3] mt-1 text-center">{activeConvo.type==='dm'?activeConvo.user.bio:activeConvo.group.description}</div>
             {activeConvo.type==='dm' ? (
-              <div className="text-center">
-                <img src={activeConvo.user.avatar} className="w-24 h-24 rounded-full mx-auto" />
-                <div className="font-bold text-[18px] mt-3">{activeConvo.user.username}</div>
-                <div className="text-[13px] text-[#9a9aa3] mt-1">{activeConvo.user.bio}</div>
-                <div className="flex gap-2 mt-5">
-                  <button onClick={()=>startCall(activeConvo.user.id,'audio')} className="flex-1 bg-[#232329] hover:bg-[#2a2a33] py-2.5 rounded-xl text-[13px] font-semibold">📞 Звонок</button>
-                  <button onClick={()=>startCall(activeConvo.user.id,'video')} className="flex-1 bg-[#7c5cff] hover:bg-[#6b4df0] py-2.5 rounded-xl text-[13px] font-semibold text-white">🎥 Видео</button>
-                </div>
-                <div className="mt-6 text-left bg-[#1e1e24] border border-[#2a2a33] rounded-xl p-3">
-                  <div className="text-[11px] font-bold text-[#9a9aa3] uppercase tracking-wider">Профиль</div>
-                  <div className="mt-2 space-y-2 text-[13px]">
-                    <div className="flex justify-between"><span className="text-[#9a9aa3]">Статус</span><span className={onlineMap[activeConvo.user.id] ? 'text-[#00d084]' : 'text-[#5a5a66]'}>{onlineMap[activeConvo.user.id]?'online':'offline'}</span></div>
-                    <div className="flex justify-between"><span className="text-[#9a9aa3]">ID</span><span className="mono text-[11px]">{activeConvo.user.id.slice(0,8)}</span></div>
-                  </div>
-                </div>
-                <button onClick={()=>{ if(confirm('Удалить из друзей?')) socket.emit('friends:remove',{friendId:activeConvo.user.id}); }} className="mt-4 w-full bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-red-400 py-2.5 rounded-xl text-[13px] font-semibold">Удалить из друзей</button>
-              </div>
+              <button onClick={()=>{ if(confirm('Удалить из друзей?')) socket.emit('friends:remove',{friendId:activeConvo.user.id}); }} className="mt-4 w-full bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-red-400 py-2.5 rounded-xl text-[13px] font-semibold">Удалить из друзей</button>
             ) : (
-              <div>
-                <div className="text-center">
-                  <img src={activeConvo.group.avatar} className="w-20 h-20 rounded-2xl mx-auto" />
-                  <div className="font-bold text-[18px] mt-3">{activeConvo.group.name}</div>
-                  <div className="text-[13px] text-[#9a9aa3] mt-1">{activeConvo.group.description || 'Групповой чат'}</div>
-                  <button onClick={()=>startCall(null,'video', activeConvo.group.id)} className="mt-4 w-full bg-[#7c5cff] py-2.5 rounded-xl font-semibold text-white">🎥 Начать групповой звонок</button>
-                </div>
-                <div className="mt-6">
-                  <div className="text-[11px] font-bold text-[#9a9aa3] uppercase tracking-wider mb-2">Участники • {activeConvo.group.members.length}</div>
-                  <div className="space-y-2">
-                    {activeConvo.group.members.map(m=>(
-                      <div key={m.id} className="flex items-center gap-2 p-2 rounded-xl hover:bg-[#1e1e24]">
-                        <img src={m.avatar} className="w-8 h-8 rounded-full" />
-                        <div className="flex-1 min-w-0"><div className="text-[13px] font-medium truncate">{m.username} {activeConvo.group.admins?.includes(m.id) && <span className="text-[10px] bg-[#7c5cff] px-1.5 py-0.5 rounded-full ml-1">admin</span>}</div><div className="text-[11px] text-[#9a9aa3]">{onlineMap[m.id]?'в сети':'оффлайн'}</div></div>
-                        {m.id!==user.id && <button onClick={()=>{ const cid=[user.id,m.id].sort().join('_'); setActiveConvo({id:cid, type:'dm', user:m}); }} className="text-[11px] bg-[#232329] px-2 py-1 rounded-full">Чат</button>}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-                <button onClick={()=>{ if(confirm('Выйти из группы?')) socket.emit('group:leave',{groupId:activeConvo.group.id}); }} className="mt-6 w-full bg-[#232329] hover:bg-[#2a2a33] py-2.5 rounded-xl text-[13px]">Выйти из группы</button>
-              </div>
+              <>
+                <button onClick={async()=>{
+                  const res = await fetch(`${API}/api/groups/${activeConvo.id}/invite`, {method:'POST', headers:{Authorization:`Bearer ${token}`}});
+                  const data = await res.json();
+                  if(data.link){ prompt('Ссылка-приглашение (скопируй):', data.link); }
+                }} className="mt-4 w-full bg-[#7c5cff]/10 hover:bg-[#7c5cff]/20 border border-[#7c5cff]/20 text-[#7c5cff] py-2.5 rounded-xl text-[13px] font-semibold">🔗 Создать инвайт-ссылку</button>
+                <button onClick={()=>{ if(confirm('Выйти из группы?')) socket.emit('group:leave',{groupId:activeConvo.group.id}); }} className="mt-3 w-full bg-[#232329] hover:bg-[#2a2a33] py-2.5 rounded-xl text-[13px]">Выйти из группы</button>
+              </>
             )}
           </div>
         </div>
@@ -850,135 +762,84 @@ export default function App(){
 
       {/* Call overlay */}
       {call && (
-        <div className="absolute inset-0 z-50 bg-[#050507] flex flex-col">
-          {/* header */}
-          <div className="h-[56px] flex items-center justify-between px-4 border-b border-[#1e1e24] bg-[#0f0f12]">
-            <div className="flex items-center gap-3">
-              <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse"></div>
-              <span className="font-semibold text-[14px]">{call.isIncoming ? 'Входящий звонок' : call.isInviting ? 'Вызов...' : 'Звонок'} • {call.type==='video' ? 'Видео' : 'Голос'} {call.groupId ? `• группа ${call.group?.name || ''}` : ''} {isScreenSharing && '• экран 1080p'}</span>
-            </div>
-            <div className="text-[12px] text-[#9a9aa3] mono">{call.callId ? call.callId.slice(0,8) : 'подключение...'}</div>
-          </div>
-
-          {/* videos grid */}
-          <div className="flex-1 overflow-auto p-3 grid gap-3 auto-rows-fr content-start" style={{gridTemplateColumns: `repeat(auto-fit, minmax(${Object.keys(callParticipants).length>1 ? '320px' : '400px'}, 1fr))`}}>
-            {/* local */}
-            <div className="relative bg-[#15151a] border border-[#23232a] rounded-[20px] overflow-hidden aspect-video min-h-[220px] flex items-center justify-center">
-              <video ref={localVideoRef} autoPlay muted playsInline className="w-full h-full object-cover" />
-              {!localStream && <div className="absolute inset-0 flex items-center justify-center text-[#5a5a66]">Включаем камеру...</div>}
-              <div className="absolute bottom-3 left-3 bg-black/60 backdrop-blur px-3 py-1.5 rounded-full text-[12px] font-medium flex items-center gap-2"><img src={user.avatar} className="w-5 h-5 rounded-full" /> Вы {isMuted && '🔇'} {isCamOff && '🚫🎥'} {isScreenSharing && '🖥️ 1080p'}</div>
-              {isScreenSharing && <div className="absolute top-3 left-3 bg-[#7c5cff] text-white text-[11px] font-bold px-2.5 py-1 rounded-full">Экран 1080p</div>}
-            </div>
-            {Object.entries(callParticipants).map(([pid, data])=>(
-              <div key={pid} className="relative bg-[#15151a] border border-[#23232a] rounded-[20px] overflow-hidden aspect-video min-h-[220px] flex items-center justify-center">
-                {data.stream ? (
-                  <video autoPlay playsInline ref={el=>{ if(el && data.stream) el.srcObject = data.stream; }} className="w-full h-full object-cover" />
-                ) : (
-                  <div className="flex flex-col items-center gap-3">
-                    <img src={data.user?.avatar} className="w-16 h-16 rounded-full" />
-                    <div className="text-[13px] text-[#9a9aa3]">Подключается...</div>
-                  </div>
-                )}
-                <div className="absolute bottom-3 left-3 bg-black/60 backdrop-blur px-3 py-1.5 rounded-full text-[12px] font-medium flex items-center gap-2">
-                  <img src={data.user?.avatar} className="w-5 h-5 rounded-full" />
-                  {data.user?.username || pid.slice(0,6)}
-                </div>
+        <div className="absolute inset-0 z-50 bg-[#0a0a0f] flex flex-col">
+          <div className="flex-1 relative bg-black overflow-hidden">
+            {Object.keys(remoteStreams).length>0 ? (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2 h-full p-2">
+                {Object.entries(remoteStreams).map(([uid, stream])=>(
+                  <video key={uid} autoPlay playsInline ref={el=>{ if(el) el.srcObject=stream; }} className="w-full h-full object-cover rounded-2xl bg-[#1a1a1f]" />
+                ))}
               </div>
-            ))}
-            {Object.keys(callParticipants).length===0 && !call.groupId && (
-              <div className="col-span-full flex flex-col items-center justify-center py-20 text-center">
-                <div className="w-24 h-24 rounded-full bg-[#1a1a1f] border border-[#2a2a33] flex items-center justify-center text-3xl mb-4 animate-pulse">📞</div>
-                <div className="font-semibold">{call.isIncoming ? `${call.from?.username} звонит...` : 'Дозваниваемся...'}</div>
-                <div className="text-[13px] text-[#9a9aa3] mt-1">Звонок P2P • защищено</div>
-              </div>
+            ) : (
+              <div className="w-full h-full flex items-center justify-center text-[#9a9aa3]">Ожидание участников...</div>
             )}
+            <video ref={localVideoRef} autoPlay playsInline muted className="absolute bottom-4 right-4 w-[140px] md:w-[200px] aspect-video object-cover rounded-2xl border-2 border-white/20 bg-[#1a1a1f] shadow-2xl" />
+            <div className="absolute top-4 left-4 flex gap-2">
+              <div className="bg-black/60 backdrop-blur px-3 py-1.5 rounded-full text-[12px]">🔴 {call.groupId ? 'Группа' : call.from?.username || 'Звонок'} {isScreenSharing?'• Экран 1080p':''} {isRecording?'• ● REC':''}</div>
+              {noiseSuppression && <div className="bg-[#00d084]/20 border border-[#00d084]/30 px-3 py-1.5 rounded-full text-[11px] text-[#00d084]">🎧 Шумодав</div>}
+            </div>
           </div>
-
-          {/* controls */}
-          <div className="h-[96px] shrink-0 bg-[#0f0f12] border-t border-[#1e1e24] flex items-center justify-center gap-3 px-4">
+          <div className="h-[100px] bg-[#15151a] border-t border-[#23232a] flex items-center justify-center gap-2 md:gap-3 px-4">
+            <button onClick={toggleMute} className={`w-12 h-12 rounded-full flex items-center justify-center transition ${isMuted?'bg-red-500':'bg-[#232329] hover:bg-[#2a2a33]'}`}>{isMuted?'🔇':'🎙️'}</button>
+            <button onClick={toggleCam} className={`w-12 h-12 rounded-full flex items-center justify-center transition ${isCamOff?'bg-red-500':'bg-[#232329] hover:bg-[#2a2a33]'}`}>{isCamOff?'🚫':'🎥'}</button>
+            <button onClick={toggleScreen} className={`px-3 md:px-4 h-12 rounded-full flex items-center justify-center text-[12px] font-semibold transition ${isScreenSharing?'bg-[#7c5cff]':'bg-[#232329] hover:bg-[#2a2a33]'}`}>🖥️ 1080p</button>
+            <button onClick={toggleRecording} className={`w-12 h-12 rounded-full flex items-center justify-center transition ${isRecording?'bg-red-500 animate-pulse':'bg-[#232329] hover:bg-[#2a2a33]'}`}>●</button>
+            <button onClick={()=>setNoiseSuppression(!noiseSuppression)} className={`w-12 h-12 rounded-full flex items-center justify-center transition ${noiseSuppression?'bg-[#00d084] text-black':'bg-[#232329]'}`}>🎧</button>
             {call.isIncoming ? (
               <>
-                <button onClick={acceptCall} className="bg-[#00d084] hover:bg-[#00b86f] text-black font-bold px-8 py-3.5 rounded-full text-[14px] flex items-center gap-2 shadow-[0_0_20px_rgba(0,208,132,0.3)]">✓ Принять</button>
-                <button onClick={()=>{ socket.emit('call:reject',{callId:call.callId}); endCall(false); }} className="bg-[#232329] hover:bg-[#2a2a33] px-8 py-3.5 rounded-full text-[14px] font-semibold">✕ Отклонить</button>
+                <button onClick={acceptCall} className="bg-[#00d084] hover:bg-[#00b86f] text-black px-6 md:px-8 h-12 rounded-full font-semibold">✓ Принять</button>
+                <button onClick={()=>{ socket.emit('call:reject',{callId:call.callId}); endCall(false); }} className="bg-[#232329] hover:bg-[#2a2a33] px-6 md:px-8 h-12 rounded-full font-semibold">✕ Отклонить</button>
               </>
             ) : (
-              <>
-                <button onClick={toggleMute} className={`w-12 h-12 rounded-full flex items-center justify-center text-[18px] border transition ${isMuted ? 'bg-red-500 border-red-500 text-white' : 'bg-[#1e1e24] border-[#2a2a33] hover:bg-[#232329]'}`}>{isMuted ? '🔇' : '🎙️'}</button>
-                <button onClick={toggleCam} className={`w-12 h-12 rounded-full flex items-center justify-center text-[18px] border transition ${isCamOff ? 'bg-red-500 border-red-500 text-white' : 'bg-[#1e1e24] border-[#2a2a33] hover:bg-[#232329]'}`}>{isCamOff ? '🚫' : '🎥'}</button>
-                <button onClick={toggleScreenShare} className={`px-5 h-12 rounded-full flex items-center justify-center gap-2 text-[13px] font-semibold border transition ${isScreenSharing ? 'bg-[#7c5cff] border-[#7c5cff] text-white shadow-[0_0_20px_rgba(124,92,255,0.4)]' : 'bg-[#1e1e24] border-[#2a2a33] hover:bg-[#232329]'}`}>🖥️ {isScreenSharing ? 'Стоп 1080p' : 'Экран 1080p'}</button>
-                <button onClick={()=>endCall(true)} className="w-12 h-12 rounded-full bg-red-500 hover:bg-red-600 flex items-center justify-center text-white text-[18px] shadow-[0_0_20px_rgba(239,68,68,0.3)]">📞</button>
-              </>
+              <button onClick={()=>endCall()} className="w-14 h-14 rounded-full bg-red-500 hover:bg-red-600 flex items-center justify-center text-xl">✕</button>
             )}
-          </div>
-
-          <div className="absolute top-[64px] left-1/2 -translate-x-1/2 bg-[#1e1e24] border border-[#2a2a33] rounded-full px-4 py-1.5 text-[11px] text-[#9a9aa3] flex items-center gap-2">
-            <span className="w-1.5 h-1.5 bg-[#00d084] rounded-full animate-pulse"></span> WebRTC P2P • Шифрование • {isScreenSharing ? 'Экран 1920×1080 30fps' : 'Демо экрана доступно'}
           </div>
         </div>
       )}
 
       {/* Modals */}
       {showAddFriend && (
-        <Modal title="Добавить друга" onClose={()=>setShowAddFriend(false)}>
-          <div className="space-y-4">
-            <p className="text-[13px] text-[#9a9aa3]">Введи никнейм друга. Он получит заявку.</p>
+        <div className="absolute inset-0 z-40 bg-black/60 backdrop-blur flex items-center justify-center p-4" onClick={()=>setShowAddFriend(false)}>
+          <div className="bg-[#1a1a1f] border border-[#2a2a33] rounded-[20px] p-6 w-full max-w-[360px]" onClick={e=>e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4"><h3 className="font-semibold">Добавить друга</h3><button onClick={()=>setShowAddFriend(false)} className="w-7 h-7 rounded-full bg-[#232329] flex items-center justify-center">✕</button></div>
             <AddFriendForm socket={socket} onDone={()=>setShowAddFriend(false)} />
-            <div className="bg-[#1e1e24] border border-[#2a2a33] rounded-xl p-3">
-              <div className="text-[12px] font-bold text-[#9a9aa3] uppercase tracking-wider">Как найти?</div>
-              <div className="text-[12px] text-[#5a5a66] mt-1">Попроси друга зарегистрироваться и сказать свой ник. Поиск работает выше в сайдбаре тоже.</div>
-            </div>
           </div>
-        </Modal>
+        </div>
       )}
       {showCreateGroup && (
-        <Modal title="Создать группу" onClose={()=>setShowCreateGroup(false)}>
-          <CreateGroupForm friends={friends} socket={socket} onDone={()=>setShowCreateGroup(false)} />
-        </Modal>
+        <div className="absolute inset-0 z-40 bg-black/60 backdrop-blur flex items-center justify-center p-4" onClick={()=>setShowCreateGroup(false)}>
+          <div className="bg-[#1a1a1f] border border-[#2a2a33] rounded-[20px] p-6 w-full max-w-[400px]" onClick={e=>e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4"><h3 className="font-semibold">Создать группу</h3><button onClick={()=>setShowCreateGroup(false)} className="w-7 h-7 rounded-full bg-[#232329] flex items-center justify-center">✕</button></div>
+            <CreateGroupForm friends={friends} socket={socket} onDone={()=>setShowCreateGroup(false)} />
+          </div>
+        </div>
       )}
       {showProfile && (
-        <Modal title="Твой профиль" onClose={()=>setShowProfile(false)}>
-          <ProfileForm user={user} socket={socket} token={token} onUpdate={u=>{ setUser(u); localStorage.setItem('cb_user', JSON.stringify(u)); }} />
-        </Modal>
-      )}
-
-      {/* mobile bottom nav */}
-      <div className="lg:hidden absolute bottom-0 left-0 right-0 bg-[#15151a]/90 backdrop-blur-xl border-t border-[#23232a] flex justify-around py-2 z-20">
-        <button onClick={()=>{ setTab('chats'); setShowSidebar(true); }} className="flex flex-col items-center gap-1 px-4 py-1"><span>💬</span><span className="text-[10px]">Чаты</span></button>
-        <button onClick={()=>{ setTab('friends'); setShowSidebar(true); }} className="flex flex-col items-center gap-1 px-4 py-1"><span>👥</span><span className="text-[10px]">Друзья {incomingReq.length>0 && <span className="bg-red-500 text-white text-[9px] px-1 rounded-full">{incomingReq.length}</span>}</span></button>
-        <button onClick={()=>{ setTab('groups'); setShowSidebar(true); }} className="flex flex-col items-center gap-1 px-4 py-1"><span>#️⃣</span><span className="text-[10px]">Группы</span></button>
-        <button onClick={()=>setShowProfile(true)} className="flex flex-col items-center gap-1 px-4 py-1"><img src={user.avatar} className="w-5 h-5 rounded-full" /><span className="text-[10px]">Профиль</span></button>
-      </div>
-    </div>
-  );
-}
-
-function Modal({title, children, onClose}){
-  return (
-    <div className="absolute inset-0 z-40 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
-      <div className="w-full max-w-[420px] bg-[#1a1a1f] border border-[#2a2a33] rounded-[24px] shadow-2xl overflow-hidden">
-        <div className="flex items-center justify-between p-5 border-b border-[#2a2a33]">
-          <div className="font-bold text-[16px]">{title}</div>
-          <button onClick={onClose} className="w-8 h-8 rounded-full bg-[#232329] flex items-center justify-center">✕</button>
+        <div className="absolute inset-0 z-40 bg-black/60 backdrop-blur flex items-center justify-center p-4" onClick={()=>setShowProfile(false)}>
+          <div className="bg-[#1a1a1f] border border-[#2a2a33] rounded-[20px] p-6 w-full max-w-[400px] max-h-[90vh] overflow-auto" onClick={e=>e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4"><h3 className="font-semibold">Профиль</h3><button onClick={()=>setShowProfile(false)} className="w-7 h-7 rounded-full bg-[#232329] flex items-center justify-center">✕</button></div>
+            <ProfileForm user={user} socket={socket} token={token} onUpdate={u=>{ setUser(u); localStorage.setItem('cb_user', JSON.stringify(u)); }} theme={theme} setTheme={setTheme} />
+          </div>
         </div>
-        <div className="p-5">{children}</div>
-      </div>
+      )}
     </div>
   );
 }
 
 function AddFriendForm({socket, onDone}){
   const [q, setQ] = useState('');
-  const [status, setStatus] = useState('');
+  const [res, setRes] = useState('');
+  function send(){
+    if(!q.trim()) return;
+    socket.emit('friends:request', {toUsername: q.trim()});
+    setRes(`Заявка ${q.trim()} отправлена!`);
+    setTimeout(()=>{ onDone(); }, 800);
+  }
   return (
-    <div className="space-y-3">
-      <input value={q} onChange={e=>setQ(e.target.value)} placeholder="Никнейм, например alex" className="w-full bg-[#232329] border border-[#2a2a33] rounded-xl px-4 py-3 text-[14px] outline-none focus:border-[#7c5cff]" />
-      <button onClick={()=>{
-        if(!q.trim()) return;
-        socket.emit('friends:request', {toUsername: q.trim()});
-        setStatus('Заявка отправлена!');
-        setTimeout(onDone, 800);
-      }} className="w-full bg-[#7c5cff] hover:bg-[#6b4df0] text-white font-semibold py-3 rounded-xl text-[14px]">Отправить заявку</button>
-      {status && <div className="text-[12px] text-[#00d084] text-center">{status}</div>}
+    <div className="space-y-4">
+      <input value={q} onChange={e=>setQ(e.target.value)} placeholder="Ник друга" className="w-full bg-[#232329] border border-[#2a2a33] rounded-xl px-4 py-3 text-[14px] outline-none focus:border-[#7c5cff]" />
+      {res && <div className="bg-[#00d084]/10 border border-[#00d084]/20 text-[#00d084] text-[12px] rounded-xl px-3 py-2">{res}</div>}
+      <button onClick={send} disabled={!q.trim()} className="w-full bg-white text-black font-semibold py-3 rounded-xl text-[14px] disabled:opacity-50">Отправить заявку</button>
     </div>
   );
 }
@@ -989,20 +850,17 @@ function CreateGroupForm({friends, socket, onDone}){
   const [selected, setSelected] = useState([]);
   return (
     <div className="space-y-4">
-      <input value={name} onChange={e=>setName(e.target.value)} placeholder="Название группы, например Игровая" className="w-full bg-[#232329] border border-[#2a2a33] rounded-xl px-4 py-3 text-[14px] outline-none focus:border-[#7c5cff]" />
+      <input value={name} onChange={e=>setName(e.target.value)} placeholder="Название группы" className="w-full bg-[#232329] border border-[#2a2a33] rounded-xl px-4 py-3 text-[14px] outline-none focus:border-[#7c5cff]" />
       <input value={desc} onChange={e=>setDesc(e.target.value)} placeholder="Описание (необязательно)" className="w-full bg-[#232329] border border-[#2a2a33] rounded-xl px-4 py-3 text-[13px] outline-none focus:border-[#7c5cff]" />
-      <div>
-        <div className="text-[12px] font-bold text-[#9a9aa3] uppercase tracking-wider mb-2">Добавить друзей</div>
-        <div className="max-h-[160px] overflow-y-auto space-y-1 bg-[#15151a] border border-[#2a2a33] rounded-xl p-2">
-          {friends.map(f=>(
-            <label key={f.id} className="flex items-center gap-2 p-2 rounded-lg hover:bg-[#232329] cursor-pointer">
-              <input type="checkbox" checked={selected.includes(f.id)} onChange={e=> setSelected(s=> e.target.checked ? [...s, f.id] : s.filter(id=>id!==f.id))} className="accent-[#7c5cff]" />
-              <img src={f.avatar} className="w-7 h-7 rounded-full" />
-              <span className="text-[13px]">{f.username}</span>
-            </label>
-          ))}
-          {friends.length===0 && <div className="text-[12px] text-[#5a5a66] p-2">Сначала добавь друзей</div>}
-        </div>
+      <div className="max-h-[180px] overflow-auto bg-[#0f0f12] border border-[#2a2a33] rounded-xl p-2 space-y-1">
+        {friends.map(f=>(
+          <label key={f.id} className="flex items-center gap-2 p-2 hover:bg-[#1e1e24] rounded-lg cursor-pointer">
+            <input type="checkbox" checked={selected.includes(f.id)} onChange={e=> setSelected(s=> e.target.checked ? [...s, f.id] : s.filter(id=>id!==f.id))} className="accent-[#7c5cff]" />
+            <img src={f.avatar} className="w-7 h-7 rounded-full" />
+            <span className="text-[13px]">{f.username}</span>
+          </label>
+        ))}
+        {friends.length===0 && <div className="text-[12px] text-[#5a5a66] p-2">Сначала добавь друзей</div>}
       </div>
       <button disabled={!name.trim()} onClick={()=>{
         socket.emit('group:create', {name, description:desc, memberIds:selected});
@@ -1012,11 +870,13 @@ function CreateGroupForm({friends, socket, onDone}){
   );
 }
 
-function ProfileForm({user, socket, token, onUpdate}){
+function ProfileForm({user, socket, token, onUpdate, theme, setTheme}){
   const [username, setUsername] = useState(user.username);
   const [bio, setBio] = useState(user.bio);
+  const [customStatus, setCustomStatus] = useState(user.customStatus||'');
   const [avatar, setAvatar] = useState(user.avatar);
   const [saving, setSaving] = useState(false);
+  const [serverUrl, setServerUrl] = useState(()=> localStorage.getItem('cb_server_url')||'');
 
   async function handleAvatar(e){
     const file = e.target.files[0];
@@ -1028,9 +888,9 @@ function ProfileForm({user, socket, token, onUpdate}){
 
   function save(){
     setSaving(true);
-    socket.emit('user:update', {username, bio, avatar});
+    socket.emit('user:update', {username, bio, customStatus, avatar, theme});
     setTimeout(()=>{
-      const updated = {...user, username, bio, avatar};
+      const updated = {...user, username, bio, customStatus, avatar, theme};
       onUpdate(updated);
       setSaving(false);
     }, 400);
@@ -1051,13 +911,47 @@ function ProfileForm({user, socket, token, onUpdate}){
       </div>
       <div>
         <label className="text-[12px] text-[#9a9aa3]">О себе</label>
-        <textarea value={bio} onChange={e=>setBio(e.target.value)} rows={3} className="w-full mt-1 bg-[#232329] border border-[#2a2a33] rounded-xl px-4 py-3 text-[13px] outline-none focus:border-[#7c5cff] resize-none" />
+        <textarea value={bio} onChange={e=>setBio(e.target.value)} rows={2} className="w-full mt-1 bg-[#232329] border border-[#2a2a33] rounded-xl px-4 py-3 text-[13px] outline-none focus:border-[#7c5cff] resize-none" />
+      </div>
+      <div>
+        <label className="text-[12px] text-[#9a9aa3]">Кастомный статус (идея #32)</label>
+        <input value={customStatus} onChange={e=>setCustomStatus(e.target.value)} placeholder="🎮 Играет в Dota, 💻 Кодит..." className="w-full mt-1 bg-[#232329] border border-[#2a2a33] rounded-xl px-4 py-3 text-[13px] outline-none focus:border-[#7c5cff]" />
+      </div>
+      <div>
+        <label className="text-[12px] text-[#9a9aa3]">Тема (идея #50)</label>
+        <div className="flex gap-2 mt-1">
+          {['dark','light','amoled'].map(t=>(
+            <button key={t} onClick={()=>setTheme(t)} className={`flex-1 py-2 rounded-xl text-[12px] border ${theme===t?'bg-white text-black border-white':'bg-[#232329] border-[#2a2a33]'}`}>{t}</button>
+          ))}
+        </div>
       </div>
       <div className="bg-[#15151a] border border-[#2a2a33] rounded-xl p-3 text-[11px] text-[#9a9aa3]">
         <div>ID: <span className="mono text-white">{user.id}</span></div>
-        <div>Аккаунт создан: {new Date(user.createdAt).toLocaleDateString()}</div>
+        <div>Создан: {new Date(user.createdAt).toLocaleDateString()}</div>
+        <div className="mt-2">Сервер: <span className="text-white break-all">{localStorage.getItem('cb_server_url')||window.location.origin}</span></div>
+      </div>
+      <div className="bg-[#15151a] border border-[#2a2a33] rounded-xl p-3">
+        <label className="text-[12px] text-[#9a9aa3]">Сервер для .exe</label>
+        <input value={serverUrl} onChange={e=>setServerUrl(e.target.value)} placeholder="https://твой-сервер.com" className="w-full mt-1 bg-[#232329] border border-[#2a2a33] rounded-xl px-3 py-2.5 text-[12px] outline-none focus:border-[#7c5cff]" />
+        <div className="flex gap-2 mt-2">
+          <button onClick={()=>{
+            if(serverUrl.trim()) localStorage.setItem('cb_server_url', serverUrl.trim());
+            else localStorage.removeItem('cb_server_url');
+            location.reload();
+          }} className="flex-1 bg-[#232329] hover:bg-[#2a2a33] py-2 rounded-lg text-[12px]">Сохранить и перезапустить</button>
+          <button onClick={()=>{ localStorage.removeItem('cb_server_url'); setServerUrl(''); location.reload(); }} className="px-3 bg-[#232329] py-2 rounded-lg text-[12px]">Сброс</button>
+        </div>
       </div>
       <button onClick={save} disabled={saving} className="w-full bg-[#7c5cff] hover:bg-[#6b4df0] text-white font-semibold py-3 rounded-xl text-[14px]">{saving?'Сохранение...':'Сохранить профиль'}</button>
+
+      <div className="bg-[#15151a] border border-[#2a2a33] rounded-xl p-3">
+        <div className="text-[12px] font-semibold mb-2">📦 2 варианта приложения (не браузер):</div>
+        <div className="text-[11px] text-[#9a9aa3] space-y-1">
+          <div><b>1. Electron:</b> `cd electron && npm run build:win` → нативное окно, трей, без браузера</div>
+          <div><b>2. Python:</b> `python Cbopka.py` → нативное окно через pywebview, `pyinstaller --onefile Cbopka.py` → exe</div>
+          <div className="mt-2">Скачать готовый exe: <a href="https://github.com/gggvkvh405-rgb/Cbopka/tree/release-exe" target="_blank" className="text-[#7c5cff] underline">GitHub release-exe</a></div>
+        </div>
+      </div>
     </div>
   );
 }

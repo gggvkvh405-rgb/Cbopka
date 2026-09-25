@@ -16,23 +16,47 @@ jobs:
         with:
           node-version: 20
           
-      - name: Install dependencies
+      - name: Install server deps
+        shell: bash
         run: |
-          npm run install:all
+          cd server
+          npm install
+          
+      - name: Install client deps
+        shell: bash
+        run: |
+          cd client
+          npm install
+          
+      - name: Build client
+        shell: bash
+        run: |
+          cd client
           npm run build
+          ls -lh dist/
           
       - name: Build Electron EXE
+        shell: bash
         run: |
           cd electron
           npm install
-          npm run build:win
+          npm run build:win || npm run build
+          ls -lh ../release/ || true
+          ls -lh dist/ || true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           
-      - name: Build Python EXE
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          
+      - name: Build Python EXE (Variant 2 - True Native App)
+        shell: bash
         run: |
           pip install pywebview pyinstaller
-          pyinstaller --onefile --windowed --name Cbopka-App --icon=client/public/icon.png Cbopka.py
+          pyinstaller --onefile --windowed --name Cbopka-App-Native --icon=client/public/icon.png Cbopka.py || pyinstaller --onefile --windowed --name Cbopka-App-Native Cbopka.py
+          ls -lh dist/
           
       - name: Upload EXE artifacts
         uses: actions/upload-artifact@v4
@@ -40,12 +64,20 @@ jobs:
           name: Cbopka-EXE-Windows
           path: |
             release/*.exe
-            dist/Cbopka-App.exe
-            electron/../release/*.exe
+            dist/*.exe
+            electron/release/*.exe
             
       - name: Upload to Release
+        shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload v1.0.0-p2p release/Cbopka*.exe --clobber || true
-          gh release upload v1.0.0-p2p dist/Cbopka-App.exe --clobber || true
+          gh release view v1.0.0-p2p || gh release create v1.0.0-p2p --title "Cbopka P2P + Native Apps" --notes "Native apps"
+          ls -lh release/ || true
+          ls -lh dist/ || true
+          for f in release/*.exe dist/*.exe; do
+            if [ -f "$f" ]; then
+              echo "Uploading $f"
+              gh release upload v1.0.0-p2p "$f" --clobber || true
+            fi
+          done
