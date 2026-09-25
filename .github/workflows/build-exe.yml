@@ -15,14 +15,36 @@ jobs:
         with:
           node-version: 22
       - name: Build client on Linux
+        id: build
         run: |
           cd client
           echo "Node $(node -v) NPM $(npm -v)"
-          rm -rf node_modules package-lock.json || true
-          npm install --legacy-peer-deps
-          npm run build
-          ls -lh dist/
+          cat package.json
+          echo "=== INSTALL ==="
+          npm install --legacy-peer-deps 2>&1 | tail -20
+          echo "=== BUILD ==="
+          npm run build 2>&1 | tee /tmp/build.log
+          echo "=== LS ==="
+          ls -lh dist/ || true
+          echo "=== BUILD LOG ==="
+          cat /tmp/build.log
+      - name: Save error log to branch if failed
+        if: failure()
+        run: |
+          cat /tmp/build.log > build-error.log || echo "no log" > build-error.log
+          cat build-error.log
+          git config --global user.email "bot@example.com"
+          git config --global user.name "bot"
+          git checkout --orphan error-logs || git checkout error-logs
+          git rm -rf . || true
+          cp /tmp/build.log ./build-error.log || cp build-error.log ./build-error.log || echo "fail" > build-error.log
+          git add build-error.log
+          git commit -m "build error log" || true
+          git push origin error-logs --force || true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Upload client dist
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: client-dist
