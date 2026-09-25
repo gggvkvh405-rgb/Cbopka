@@ -57,40 +57,36 @@ jobs:
             release/
             dist/
 
-      - name: Upload to file.io and save link
+      - name: Upload to file.io and save link to release-exe branch
         shell: bash
         continue-on-error: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           echo "=== Uploading to file.io ===" || true
-          mkdir -p /tmp/links || true
           for f in release/*.exe dist/*.exe; do
             if [ -f "$f" ]; then
-              echo "Uploading $f..." || true
+              echo "Uploading $f to file.io..." || true
               curl -s -F "file=@$f" https://file.io 2>&1 | tail -10 || true
-              LINK=$(curl -s -F "file=@$f" https://file.io 2>&1 | grep -o '"link":"[^"]*"' | cut -d'"' -f4 || true)
-              echo "Link: $LINK" || true
-              echo "$f: $LINK" >> /tmp/links.txt || true
             fi
           done
-          cat /tmp/links.txt || true
-          echo "# Direct download links for Variant2 Native App" > /tmp/DOWNLOAD-LINKS.md || true
-          cat /tmp/links.txt >> /tmp/DOWNLOAD-LINKS.md || true
-          echo "Built $(date)" >> /tmp/DOWNLOAD-LINKS.md || true
-          cat /tmp/DOWNLOAD-LINKS.md || true
-          # Commit to arena branch
+          echo "=== Pushing exe to release-exe branch ===" || true
           git config --global user.email "bot@example.com" || true
           git config --global user.name "bot" || true
           git remote set-url origin https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git || true
-          git fetch origin arena/01a0c9e9-cbopka || true
-          git checkout arena/01a0c9e9-cbopka || git checkout -b arena/01a0c9e9-cbopka || true
+          mkdir -p /tmp/exe-save || true
+          cp release/*.exe /tmp/exe-save/ 2>/dev/null || true
+          cp dist/*.exe /tmp/exe-save/ 2>/dev/null || true
+          ls -lh /tmp/exe-save/ || true
+          git fetch origin release-exe || true
+          git checkout release-exe || git checkout -b release-exe || true
           mkdir -p release || true
-          cp /tmp/DOWNLOAD-LINKS.md release/DOWNLOAD-LINKS.md || true
-          git add release/DOWNLOAD-LINKS.md || true
-          git commit -m "feat: add download links for native v2" || true
-          git push origin arena/01a0c9e9-cbopka --force || true
-          echo "Done" || true
+          cp /tmp/exe-save/*.exe release/ 2>/dev/null || true
+          ls -lh release/ | head -20 || true
+          git add release/*.exe || true
+          git status --short | head -20 || true
+          git commit -m "feat: native exe v2 true window $(date)" || echo "no changes"
+          git push origin release-exe --force || echo "push failed"
 
       - name: Upload to Release via action
         uses: softprops/action-gh-release@v2
