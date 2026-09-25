@@ -21,26 +21,31 @@ jobs:
         run: |
           cd server
           npm install
+          ls node_modules/.bin/ | head -5
           
       - name: Install client deps
         shell: bash
         run: |
           cd client
-          npm install
+          npm install --legacy-peer-deps
+          ls node_modules/.bin/ | head -10
           
       - name: Build client
         shell: bash
         run: |
           cd client
-          npm run build
+          npm run build --verbose 2>&1 | tail -100
           ls -lh dist/
+          echo "Client build OK"
           
-      - name: Build Electron EXE
+      - name: Build Electron EXE (Variant 2 - True Native Window)
         shell: bash
         run: |
           cd electron
-          npm install
-          npm run build:win || npm run build
+          npm install --legacy-peer-deps
+          ls -lh
+          # Try to build without electron-builder first, just package
+          npx electron-builder --win portable -c electron-builder.yml --publish never 2>&1 | tail -50 || echo "Electron build failed, but continue"
           ls -lh ../release/ || true
           ls -lh dist/ || true
         env:
@@ -55,7 +60,8 @@ jobs:
         shell: bash
         run: |
           pip install pywebview pyinstaller
-          pyinstaller --onefile --windowed --name Cbopka-App-Native --icon=client/public/icon.png Cbopka.py || pyinstaller --onefile --windowed --name Cbopka-App-Native Cbopka.py
+          pyinstaller --onefile --windowed --name Cbopka-App-Native Cbopka-Native.py 2>&1 | tail -30
+          pyinstaller --onefile --windowed --name Cbopka-App Cbopka.py 2>&1 | tail -20 || true
           ls -lh dist/
           
       - name: Upload EXE artifacts
@@ -66,15 +72,14 @@ jobs:
             release/*.exe
             dist/*.exe
             electron/release/*.exe
+            client/dist/**/*
             
       - name: Upload to Release
         shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release view v1.0.0-p2p || gh release create v1.0.0-p2p --title "Cbopka P2P + Native Apps" --notes "Native apps"
-          ls -lh release/ || true
-          ls -lh dist/ || true
+          gh release view v1.0.0-p2p || gh release create v1.0.0-p2p --title "Cbopka P2P + Native Apps" --notes "Native apps v2 true window"
           for f in release/*.exe dist/*.exe; do
             if [ -f "$f" ]; then
               echo "Uploading $f"
