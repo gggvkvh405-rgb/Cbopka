@@ -21,35 +21,47 @@ jobs:
         run: |
           cd server
           npm install
-          ls node_modules/.bin/ | head -5
           
       - name: Install client deps
-        shell: bash
         run: |
           cd client
           npm install --legacy-peer-deps
-          ls node_modules/.bin/ | head -10
           
-      - name: Build client
-        shell: bash
+      - name: Build client (pwsh)
+        shell: pwsh
         run: |
           cd client
-          npm run build --verbose 2>&1 | tail -100
-          ls -lh dist/
-          echo "Client build OK"
+          Write-Host "Node version:"
+          node --version
+          Write-Host "NPM version:"
+          npm --version
+          Write-Host "Files:"
+          dir
+          Write-Host "Building..."
+          npm run build 2>&1 | Tee-Object -FilePath build.log
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "Build failed, log:"
+            Get-Content build.log
+            exit 1
+          }
+          dir dist
+          
+      - name: Upload client build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: client-build-log
+          path: client/build.log
           
       - name: Build Electron EXE (Variant 2 - True Native Window)
-        shell: bash
+        shell: pwsh
         run: |
           cd electron
           npm install --legacy-peer-deps
-          ls -lh
-          # Try to build without electron-builder first, just package
-          npx electron-builder --win portable -c electron-builder.yml --publish never 2>&1 | tail -50 || echo "Electron build failed, but continue"
-          ls -lh ../release/ || true
-          ls -lh dist/ || true
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          dir
+          npx electron-builder --win portable -c electron-builder.yml --publish never 2>&1 | Tee-Object -FilePath ../electron-build.log
+          dir ../release/ -ErrorAction SilentlyContinue
+          dir dist/ -ErrorAction SilentlyContinue
           
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -57,14 +69,15 @@ jobs:
           python-version: '3.11'
           
       - name: Build Python EXE (Variant 2 - True Native App)
-        shell: bash
+        shell: pwsh
         run: |
           pip install pywebview pyinstaller
-          pyinstaller --onefile --windowed --name Cbopka-App-Native Cbopka-Native.py 2>&1 | tail -30
-          pyinstaller --onefile --windowed --name Cbopka-App Cbopka.py 2>&1 | tail -20 || true
-          ls -lh dist/
+          pyinstaller --onefile --windowed --name Cbopka-App-Native Cbopka-Native.py 2>&1 | Tee-Object -FilePath ../pyinstaller-native.log
+          pyinstaller --onefile --windowed --name Cbopka-App Cbopka.py 2>&1 | Tee-Object -FilePath ../pyinstaller.log
+          dir dist/
           
       - name: Upload EXE artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: Cbopka-EXE-Windows
@@ -73,8 +86,11 @@ jobs:
             dist/*.exe
             electron/release/*.exe
             client/dist/**/*
+            *-build.log
+            *.log
             
       - name: Upload to Release
+        if: success()
         shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
