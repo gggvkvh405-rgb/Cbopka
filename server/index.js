@@ -27,20 +27,25 @@ let Database = null;
 let db = null;
 let useSQLite = false;
 
-try {
-  const multerMod = await import('multer');
-  multer = multerMod.default;
-  console.log('✅ multer loaded');
-} catch (e) {
-  console.log('⚠️ multer not available, file upload disabled:', e.message);
+if (process.env.DISABLE_MULTER !== '1') {
+  try {
+    const multerMod = await import('multer');
+    multer = multerMod.default;
+    console.log('✅ multer loaded');
+  } catch (e) {
+    console.log('⚠️ multer not available, file upload disabled:', e.message);
+  }
+} else {
+  console.log('⚠️ multer disabled via DISABLE_MULTER');
 }
 
-try {
-  const dbMod = await import('better-sqlite3');
-  Database = dbMod.default;
-  const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'cbopka.db');
-  db = new Database(DB_PATH);
-  db.pragma('journal_mode = WAL');
+if (process.env.DISABLE_SQLITE !== '1') {
+  try {
+    const dbMod = await import('better-sqlite3');
+    Database = dbMod.default;
+    const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'cbopka.db');
+    db = new Database(DB_PATH);
+    db.pragma('journal_mode = WAL');
   db.exec(`
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
@@ -114,6 +119,10 @@ CREATE TABLE IF NOT EXISTS files (
   console.log(`✅ SQLite persistence at ${DB_PATH}`);
 } catch (e) {
   console.log('⚠️ better-sqlite3 not available, using in-memory storage:', e.message);
+  useSQLite = false;
+}
+} else {
+  console.log('⚠️ SQLite disabled via DISABLE_SQLITE, using in-memory');
   useSQLite = false;
 }
 

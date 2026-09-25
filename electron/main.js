@@ -49,7 +49,7 @@ function startLocalServer(){
   console.log('Server entry:', serverEntry, 'exists:', fs.existsSync(serverEntry));
   console.log('Client dist:', clientDist, 'exists:', fs.existsSync(clientDist));
   return new Promise((resolve,reject)=>{
-    const env={...process.env, PORT:String(DEFAULT_PORT), CLIENT_DIST_PATH:clientDist, NODE_ENV:'production'};
+    const env={...process.env, PORT:String(DEFAULT_PORT), CLIENT_DIST_PATH:clientDist, NODE_ENV:'production', DISABLE_SQLITE:'1', DISABLE_MULTER:'1'};
     try{serverProcess=fork(serverEntry,[],{env, stdio:'pipe', cwd:path.dirname(serverEntry)});}catch(e){reject(e); return;}
     let started=false;
     let output = '';
