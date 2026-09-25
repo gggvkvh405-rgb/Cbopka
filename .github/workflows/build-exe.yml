@@ -45,7 +45,6 @@ jobs:
           pyinstaller --onefile --name Cbopka-App Cbopka.py 2>&1 | tail -20 || true
           ls -lh dist/ || true
           ls -lh release/ || true
-          find . -maxdepth 3 -name "*.exe" -type f -exec ls -lh {} \; 2>/dev/null | head -20 || true
 
       - name: Upload EXE artifacts
         uses: actions/upload-artifact@v4
@@ -56,11 +55,12 @@ jobs:
             dist/
 
       - name: Upload to Release via action
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: v1.0.0-p2p
           files: |
             release/*.exe
             dist/*.exe
+          fail_on_unmatched_files: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
