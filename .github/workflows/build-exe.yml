@@ -54,8 +54,36 @@ jobs:
             release/
             dist/
 
+      - name: Push EXE to release-exe branch
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "=== Pushing exe to release-exe branch ==="
+          git config --global user.email "bot@example.com"
+          git config --global user.name "bot"
+          # Save exe files to temp
+          mkdir -p /tmp/exe-save
+          cp release/*.exe /tmp/exe-save/ 2>/dev/null || true
+          cp dist/*.exe /tmp/exe-save/ 2>/dev/null || true
+          ls -lh /tmp/exe-save/ || true
+          # Checkout release-exe branch
+          git fetch origin release-exe || true
+          git checkout release-exe || git checkout -b release-exe
+          mkdir -p release
+          cp /tmp/exe-save/*.exe release/ 2>/dev/null || true
+          cp /tmp/exe-save/*.exe ./ 2>/dev/null || true
+          ls -lh release/ || true
+          ls -lh *.exe 2>/dev/null | head -10 || true
+          git add release/*.exe *.exe 2>/dev/null || true
+          git status --short | head -20
+          git commit -m "feat: native exe v2 true window $(date)" || echo "no changes"
+          git push origin release-exe --force || true
+          echo "=== Done pushing ==="
+
       - name: Upload to Release via action
         uses: softprops/action-gh-release@v2
+        continue-on-error: true
         with:
           tag_name: v1.0.0-p2p
           files: |
