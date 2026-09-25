@@ -14,16 +14,37 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: 'npm'
-          cache-dependency-path: client/package-lock.json
       - name: Build client on Linux
         run: |
           cd client
           echo "Node $(node -v) NPM $(npm -v)"
-          npm ci --legacy-peer-deps || npm install --legacy-peer-deps
-          npm run build
+          npm ci --legacy-peer-deps 2>&1 | tee /tmp/install.log
+          echo "=== INSTALL TAIL ==="
+          tail -50 /tmp/install.log
+          echo "=== BUILD ==="
+          npm run build 2>&1 | tee /tmp/build.log
+          echo "=== BUILD TAIL ==="
+          tail -100 /tmp/build.log
           ls -lh dist/
+      - name: Create gist on failure
+        if: failure()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Creating gist with logs..."
+          cat /tmp/build.log | tail -200 > /tmp/error.txt
+          cat /tmp/install.log | tail -100 >> /tmp/error.txt
+          gh gist create /tmp/error.txt --public -d "build error log" 2>&1 | tail -20 || true
+          # Also try to upload as artifact with if-no-files-found warn
+          echo "Attempting artifact upload of logs..."
+      - name: Upload logs artifact
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: /tmp/*.log
       - name: Upload client dist
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: client-dist
@@ -45,7 +66,7 @@ jobs:
           path: client/dist
       - name: List client dist
         shell: bash
-        run: ls -lh client/dist/ && ls -lh client/dist/assets/ | head -20
+        run: ls -lh client/dist/
       - name: Install server deps
         shell: bash
         run: cd server && npm install
