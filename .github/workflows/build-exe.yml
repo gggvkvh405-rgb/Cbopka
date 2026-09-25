@@ -6,66 +6,57 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-client:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Setup Node 22
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - name: Build client on Linux
-        run: |
-          cd client
-          echo "Node $(node -v) NPM $(npm -v)"
-          rm -rf node_modules package-lock.json
-          npm install --legacy-peer-deps
-          npm run build
-          ls -lh dist/
-      - name: Upload client dist
-        uses: actions/upload-artifact@v4
-        with:
-          name: client-dist
-          path: client/dist
-
   build-win:
     runs-on: windows-latest
-    needs: build-client
     steps:
       - uses: actions/checkout@v4
+      
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Download client dist
-        uses: actions/download-artifact@v4
-        with:
-          name: client-dist
-          path: client/dist
-      - name: List client dist
+
+      - name: Check client dist (committed)
         shell: bash
-        run: ls -lh client/dist/
+        run: |
+          ls -lh client/dist/ || echo "no dist, building"
+          if [ ! -f client/dist/index.html ]; then
+            cd client
+            rm -rf node_modules package-lock.json
+            npm install --legacy-peer-deps
+            npm run build
+            ls -lh dist/
+          fi
+
       - name: Install server deps
         shell: bash
-        run: cd server && npm install
-      - name: Build Electron EXE
+        run: |
+          cd server
+          npm install
+
+      - name: Build Electron EXE (Variant 2 - True Native Window, not browser)
         shell: bash
         run: |
           cd electron
           npm install --legacy-peer-deps
           npx electron-builder --win portable -c electron-builder.yml --publish never 2>&1 | tail -100 || true
           ls -lh ../release/ || true
+          ls -lh release/ || true
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Build Python EXE
+
+      - name: Build Python EXE (Variant 2 - True Native App, pywebview window)
         shell: bash
         run: |
           pip install pywebview pyinstaller
           pyinstaller --onefile --windowed --name Cbopka-App-Native Cbopka-Native.py
           pyinstaller --onefile --windowed --name Cbopka-App Cbopka.py || true
           ls -lh dist/
+          ls -lh ../dist/ || true
+
       - name: Upload EXE artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -73,10 +64,17 @@ jobs:
           path: |
             release/*.exe
             dist/*.exe
+            electron/release/*.exe
+
       - name: Upload to Release
         shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release view v1.0.0-p2p || gh release create v1.0.0-p2p --title "Cbopka P2P + Native Apps" --notes "Native apps v2 true window"
-          for f in release/*.exe dist/*.exe; do if [ -f "$f" ]; then gh release upload v1.0.0-p2p "$f" --clobber || true; fi; done
+          gh release view v1.0.0-p2p || gh release create v1.0.0-p2p --title "Cbopka P2P + Native Apps" --notes "Native apps v2 true window, not browser. Variant1: SEA exe opens browser. Variant2: Python pywebview native window + Electron native window"
+          for f in release/*.exe dist/*.exe electron/release/*.exe; do
+            if [ -f "$f" ]; then
+              echo "Uploading $f"
+              gh release upload v1.0.0-p2p "$f" --clobber || true
+            fi
+          done
