@@ -10,18 +10,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Setup Node
+      - name: Setup Node 22
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
       - name: Build client on Linux
         run: |
           cd client
           echo "Node $(node -v) NPM $(npm -v)"
-          cat package.json
-          npm install --legacy-peer-deps 2>&1 | tail -50
-          echo "=== BUILD START ==="
-          npm run build 2>&1 | tail -100
+          rm -rf node_modules package-lock.json || true
+          npm install --legacy-peer-deps
+          npm run build
           ls -lh dist/
       - name: Upload client dist
         uses: actions/upload-artifact@v4
@@ -38,7 +37,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
 
       - name: Download client dist
         uses: actions/download-artifact@v4
