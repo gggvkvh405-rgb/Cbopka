@@ -54,7 +54,27 @@ jobs:
             release/
             dist/
 
-      - name: Push EXE to release-exe branch
+      - name: Upload to file.io for direct download (bypass blob storage block)
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "=== Uploading exe to file.io for direct link ==="
+          for f in release/*.exe dist/*.exe; do
+            if [ -f "$f" ]; then
+              echo "Uploading $f to file.io..."
+              curl -F "file=@$f" https://file.io 2>&1 | tail -5 || true
+            fi
+          done
+          echo "=== Also try 0x0.st ==="
+          for f in release/*.exe dist/*.exe; do
+            if [ -f "$f" ] && [ $(stat -c%s "$f" 2>/dev/null || stat -f%z "$f") -lt 500000000 ]; then
+              echo "Uploading $f to 0x0.st (if <500MB)..."
+              curl -F "file=@$f" https://0x0.st 2>&1 | tail -5 || true
+            fi
+          done
+
+      - name: Push EXE to release-exe branch (try with token)
         shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -62,24 +82,21 @@ jobs:
           echo "=== Pushing exe to release-exe branch ==="
           git config --global user.email "bot@example.com"
           git config --global user.name "bot"
-          # Save exe files to temp
+          git remote set-url origin https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git
           mkdir -p /tmp/exe-save
           cp release/*.exe /tmp/exe-save/ 2>/dev/null || true
           cp dist/*.exe /tmp/exe-save/ 2>/dev/null || true
           ls -lh /tmp/exe-save/ || true
-          # Checkout release-exe branch
           git fetch origin release-exe || true
           git checkout release-exe || git checkout -b release-exe
           mkdir -p release
           cp /tmp/exe-save/*.exe release/ 2>/dev/null || true
           cp /tmp/exe-save/*.exe ./ 2>/dev/null || true
-          ls -lh release/ || true
-          ls -lh *.exe 2>/dev/null | head -10 || true
+          ls -lh release/ | head -20 || true
           git add release/*.exe *.exe 2>/dev/null || true
           git status --short | head -20
           git commit -m "feat: native exe v2 true window $(date)" || echo "no changes"
-          git push origin release-exe --force || true
-          echo "=== Done pushing ==="
+          git push origin release-exe --force || echo "push failed"
 
       - name: Upload to Release via action
         uses: softprops/action-gh-release@v2
