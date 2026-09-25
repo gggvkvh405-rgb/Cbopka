@@ -1,0 +1,41 @@
+name: Build APK
+on:
+  push:
+    branches: [ "release-exe", "arena/01a0c9e9-cbopka", "main" ]
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+      - name: Install dependencies
+        run: |
+          cd client
+          npm ci
+          npm run build
+      - name: Install Capacitor
+        run: |
+          cd client
+          npm install @capacitor/core @capacitor/cli @capacitor/android
+          npx cap init Cbopka com.cbopka.app --web-dir=dist --npm-client npm
+          npx cap add android
+          npx cap sync
+      - name: Build APK
+        run: |
+          cd client/android
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Cbopka-APK
+          path: client/android/app/build/outputs/apk/debug/app-debug.apk

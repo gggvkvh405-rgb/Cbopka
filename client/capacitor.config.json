@@ -1,0 +1,9 @@
+{
+  "appId": "com.cbopka.app",
+  "appName": "Cbopka",
+  "webDir": "dist",
+  "bundledWebRuntime": false,
+  "server": {
+    "androidScheme": "https"
+  }
+}

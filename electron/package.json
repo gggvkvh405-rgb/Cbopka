@@ -1,0 +1,22 @@
+{
+  "name": "cbopka-desktop",
+  "version": "1.0.0",
+  "description": "Cbopka messenger desktop",
+  "main": "main.js",
+  "type": "module",
+  "scripts": {
+    "dev": "electron .",
+    "build:win": "electron-builder --win portable -c electron-builder.yml"
+  },
+  "devDependencies": {
+    "electron": "^30.0.0",
+    "electron-builder": "^24.13.3"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "socket.io": "^4.7.5",
+    "cors": "^2.8.5",
+    "uuid": "^9.0.1",
+    "bcryptjs": "^2.4.3"
+  }
+}

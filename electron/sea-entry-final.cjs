@@ -1,0 +1,86 @@
+const path = require('path');
+const fs = require('fs');
+const os = require('os');
+const { exec } = require('child_process');
+const express = require('express');
+const http = require('http');
+const { Server } = require('socket.io');
+const cors = require('cors');
+const { v4: uuidv4 } = require('uuid');
+const bcrypt = require('bcryptjs');
+function resolveClientDist(){
+  const execDir = path.dirname(process.execPath);
+  const candidates = [
+    path.join(__dirname, '../client/dist'),
+    path.join(__dirname, '../../client/dist'),
+    path.join(process.cwd(), 'client/dist'),
+    path.join(execDir, 'client/dist'),
+    path.join(execDir, '../client/dist'),
+    path.join(__dirname, 'client/dist'),
+    path.join(__dirname, '../client-dist'),
+  ];
+  for(const p of candidates){
+    try{ if(fs.existsSync(path.join(p, 'index.html'))) { console.log('Client dist found:', p); return p; } }catch{}
+  }
+  return path.join(__dirname, '../client/dist');
+}
+const clientDist = resolveClientDist();
+const PORT = process.env.PORT || 3000;
+console.log(`Cbopka - Client: ${clientDist} Port: ${PORT}`);
+function openBrowser(url){
+  const platform = os.platform();
+  let cmd;
+  if(platform==='win32') cmd = `start "" "${url}"`;
+  else if(platform==='darwin') cmd = `open "${url}"`;
+  else cmd = `xdg-open "${url}" 2>/dev/null || sensible-browser "${url}" 2>/dev/null || echo "Open ${url}"`;
+  exec(cmd, ()=>{});
+}
+const app = express();
+const server = http.createServer(app);
+const io = new Server(server, { cors: { origin: '*', methods: ['GET','POST'] }, maxHttpBufferSize: 1e8 });
+app.use(cors());
+app.use(express.json({ limit: '50mb' }));
+app.use(express.static(clientDist));
+const users = new Map(); const usersByName = new Map(); const sessions = new Map(); const friendships = new Map(); const friendRequests = []; const messages = new Map(); const groups = new Map(); const userSockets = new Map(); const calls = new Map();
+function getConvoId(a,b){ return [a,b].sort().join('_'); }
+function getUserPublic(u){ if(!u) return null; const {passwordHash, ...pub}=u; return pub; }
+function ensureFriendSet(uid){ if(!friendships.has(uid)) friendships.set(uid, new Set()); }
+app.post('/api/register', async (req,res)=>{ const {username, password, avatar, bio} = req.body; if(!username || !password) return res.status(400).json({error:'username and password required'}); const clean = username.trim(); if(clean.length < 3 || clean.length > 20) return res.status(400).json({error:'username 3-20 chars'}); if(usersByName.has(clean.toLowerCase())) return res.status(400).json({error:'username taken'}); const id = uuidv4(); const hash = await bcrypt.hash(password, 8); const user = { id, username: clean, passwordHash: hash, avatar: avatar || `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(clean)}`, bio: bio || 'Привет! Я использую Cbopka', status: 'online', createdAt: Date.now(), lastSeen: Date.now() }; users.set(id, user); usersByName.set(clean.toLowerCase(), id); ensureFriendSet(id); const token = uuidv4(); sessions.set(token, id); res.json({token, user: getUserPublic(user)}); });
+app.post('/api/login', async (req,res)=>{ const {username, password} = req.body; if(!username || !password) return res.status(400).json({error:'required'}); const uid = usersByName.get(username.trim().toLowerCase()); if(!uid) return res.status(400).json({error:'user not found'}); const user = users.get(uid); const ok = await bcrypt.compare(password, user.passwordHash); if(!ok) return res.status(400).json({error:'wrong password'}); const token = uuidv4(); sessions.set(token, uid); user.lastSeen = Date.now(); user.status = 'online'; res.json({token, user: getUserPublic(user)}); });
+app.get('/api/me', (req,res)=>{ const token = req.headers.authorization?.replace('Bearer ',''); const uid = sessions.get(token); if(!uid) return res.status(401).json({error:'unauthorized'}); const u = users.get(uid); res.json({user: getUserPublic(u)}); });
+app.get('/api/users/search', (req,res)=>{ const token = req.headers.authorization?.replace('Bearer ',''); const uid = sessions.get(token); if(!uid) return res.status(401).json({error:'unauthorized'}); const q = (req.query.q||'').toLowerCase(); const list = [...users.values()].filter(u=> u.username.toLowerCase().includes(q) && u.id!==uid).slice(0,20).map(getUserPublic); res.json({users:list}); });
+app.get('/api/friends', (req,res)=>{ const token = req.headers.authorization?.replace('Bearer ',''); const uid = sessions.get(token); if(!uid) return res.status(401).json({error:'unauthorized'}); ensureFriendSet(uid); const friends = [...(friendships.get(uid)||[])].map(fid=> getUserPublic(users.get(fid))).filter(Boolean); const incoming = friendRequests.filter(r=> r.to===uid && r.status==='pending').map(r=> ({...r, fromUser: getUserPublic(users.get(r.from))})); const outgoing = friendRequests.filter(r=> r.from===uid && r.status==='pending').map(r=> ({...r, toUser: getUserPublic(users.get(r.to))})); res.json({friends, incoming, outgoing}); });
+app.get('/api/groups', (req,res)=>{ const token = req.headers.authorization?.replace('Bearer ',''); const uid = sessions.get(token); if(!uid) return res.status(401).json({error:'unauthorized'}); const myGroups = [...groups.values()].filter(g=> g.members.has(uid)).map(g=> ({...g, members: [...g.members].map(mid=> getUserPublic(users.get(mid))), admins: [...g.admins]})); res.json({groups: myGroups}); });
+app.get('/api/messages/:convoId', (req,res)=>{ const token = req.headers.authorization?.replace('Bearer ',''); const uid = sessions.get(token); if(!uid) return res.status(401).json({error:'unauthorized'}); const {convoId} = req.params; const msgs = messages.get(convoId) || []; if(convoId.includes('_')){ const parts = convoId.split('_'); if(!parts.includes(uid)) return res.status(403).json({error:'forbidden'}); } else { const g = groups.get(convoId); if(!g || !g.members.has(uid)) return res.status(403).json({error:'forbidden'}); } res.json({messages: msgs.slice(-200)}); });
+app.get('/api/users/:id', (req,res)=>{ const token = req.headers.authorization?.replace('Bearer ',''); const uid = sessions.get(token); if(!uid) return res.status(401).json({error:'unauthorized'}); const u = users.get(req.params.id); if(!u) return res.status(404).json({error:'not found'}); res.json({user: getUserPublic(u)}); });
+io.use((socket, next)=>{ const token = socket.handshake.auth?.token; const uid = sessions.get(token); if(!uid) return next(new Error('unauthorized')); socket.userId = uid; next(); });
+io.on('connection', (socket)=>{
+  const uid = socket.userId; const user = users.get(uid); if(!user) return socket.disconnect(); userSockets.set(uid, socket.id); user.status = 'online'; user.lastSeen = Date.now();
+  socket.broadcast.emit('user:online', {userId: uid});
+  socket.emit('connected', {userId: uid});
+  socket.on('user:update', ({avatar,bio,status,username})=>{ if(avatar) user.avatar = avatar; if(bio) user.bio = bio; if(status) user.status = status; if(username && username.trim().length>=3){ const oldKey = user.username.toLowerCase(); const newKey = username.trim().toLowerCase(); if(oldKey!==newKey && !usersByName.has(newKey)){ usersByName.delete(oldKey); usersByName.set(newKey, uid); user.username = username.trim(); } } io.emit('user:updated', {user: getUserPublic(user)}); });
+  socket.on('friends:request', ({toUsername, toUserId})=>{ let targetId = toUserId; if(!targetId && toUsername) targetId = usersByName.get(toUsername.trim().toLowerCase()); if(!targetId || targetId===uid) return; ensureFriendSet(uid); ensureFriendSet(targetId); if(friendships.get(uid)?.has(targetId)) return socket.emit('error_msg',{msg:'Уже в друзьях'}); if(friendRequests.find(r=> r.from===uid && r.to===targetId && r.status==='pending')) return; const reqObj = {id: uuidv4(), from: uid, to: targetId, status:'pending', at: Date.now()}; friendRequests.push(reqObj); const targetSocket = userSockets.get(targetId); if(targetSocket) io.to(targetSocket).emit('friends:request:incoming', {...reqObj, fromUser: getUserPublic(user)}); socket.emit('friends:request:sent', reqObj); });
+  socket.on('friends:accept', ({requestId})=>{ const fr = friendRequests.find(r=> r.id===requestId && r.to===uid); if(!fr) return; fr.status='accepted'; ensureFriendSet(fr.from); ensureFriendSet(fr.to); friendships.get(fr.from).add(fr.to); friendships.get(fr.to).add(fr.from); const fromUser = users.get(fr.from); const toUser = users.get(fr.to); const s1 = userSockets.get(fr.from); const s2 = userSockets.get(fr.to); if(s1) io.to(s1).emit('friends:added', {friend: getUserPublic(toUser)}); if(s2) io.to(s2).emit('friends:added', {friend: getUserPublic(fromUser)}); io.to(s1).emit('friends:request:accepted', fr); io.to(s2).emit('friends:request:accepted', fr); });
+  socket.on('friends:reject', ({requestId})=>{ const fr = friendRequests.find(r=> r.id===requestId && r.to===uid); if(!fr) return; fr.status='rejected'; socket.emit('friends:request:rejected', fr); const s = userSockets.get(fr.from); if(s) io.to(s).emit('friends:request:rejected', fr); });
+  socket.on('friends:remove', ({friendId})=>{ ensureFriendSet(uid); ensureFriendSet(friendId); friendships.get(uid)?.delete(friendId); friendships.get(friendId)?.delete(uid); socket.emit('friends:removed', {friendId}); const s = userSockets.get(friendId); if(s) io.to(s).emit('friends:removed', {friendId: uid}); });
+  socket.on('message:send', ({convoId, text, toUserId, type='text', meta})=>{ if(!text || !text.trim()) return; let finalConvo = convoId; if(toUserId) finalConvo = getConvoId(uid, toUserId); if(!finalConvo) return; if(finalConvo.includes('_')){ const parts = finalConvo.split('_'); if(!parts.includes(uid)) return; } else { const g = groups.get(finalConvo); if(!g || !g.members.has(uid)) return; } const msg = { id: uuidv4(), from: uid, convoId: finalConvo, text: text.trim().slice(0,2000), at: Date.now(), type, meta: meta||null }; if(!messages.has(finalConvo)) messages.set(finalConvo, []); messages.get(finalConvo).push(msg); if(finalConvo.includes('_')){ const parts = finalConvo.split('_'); parts.forEach(pid=>{ const sid = userSockets.get(pid); if(sid) io.to(sid).emit('message:new', msg); }); } else { const g = groups.get(finalConvo); g.members.forEach(pid=>{ const sid = userSockets.get(pid); if(sid) io.to(sid).emit('message:new', msg); }); } });
+  socket.on('typing:start', ({convoId, toUserId})=>{ let finalConvo = convoId || (toUserId ? getConvoId(uid, toUserId) : null); if(!finalConvo) return; if(finalConvo.includes('_')){ const other = finalConvo.split('_').find(id=> id!==uid); const sid = userSockets.get(other); if(sid) io.to(sid).emit('typing:start', {convoId: finalConvo, userId: uid}); } else { const g = groups.get(finalConvo); if(!g) return; g.members.forEach(pid=>{ if(pid===uid) return; const sid = userSockets.get(pid); if(sid) io.to(sid).emit('typing:start', {convoId: finalConvo, userId: uid}); }); } });
+  socket.on('typing:stop', ({convoId, toUserId})=>{ let finalConvo = convoId || (toUserId ? getConvoId(uid, toUserId) : null); if(!finalConvo) return; if(finalConvo.includes('_')){ const other = finalConvo.split('_').find(id=> id!==uid); const sid = userSockets.get(other); if(sid) io.to(sid).emit('typing:stop', {convoId: finalConvo, userId: uid}); } else { const g = groups.get(finalConvo); if(!g) return; g.members.forEach(pid=>{ if(pid===uid) return; const sid = userSockets.get(pid); if(sid) io.to(sid).emit('typing:stop', {convoId: finalConvo, userId: uid}); }); } });
+  socket.on('group:create', ({name, memberIds, avatar, description})=>{ if(!name || name.trim().length<2) return; const id = uuidv4(); const members = new Set([uid, ...(memberIds||[]).filter(mid=> users.has(mid))]); const g = { id, name: name.trim().slice(0,40), avatar: avatar || `https://api.dicebear.com/7.x/shapes/svg?seed=${id}`, description: (description||'').slice(0,200), members, admins: new Set([uid]), createdAt: Date.now() }; groups.set(id, g); members.forEach(pid=>{ const sid = userSockets.get(pid); if(sid) io.to(sid).emit('group:created', {...g, members: [...g.members].map(mid=> getUserPublic(users.get(mid))), admins: [...g.admins]}); }); });
+  socket.on('group:addMembers', ({groupId, memberIds})=>{ const g = groups.get(groupId); if(!g || !g.admins.has(uid)) return; memberIds.forEach(mid=>{ if(users.has(mid)) g.members.add(mid); }); g.members.forEach(pid=>{ const sid = userSockets.get(pid); if(sid) io.to(sid).emit('group:updated', {...g, members: [...g.members].map(mid=> getUserPublic(users.get(mid))), admins: [...g.admins]}); }); });
+  socket.on('group:leave', ({groupId})=>{ const g = groups.get(groupId); if(!g) return; g.members.delete(uid); g.admins.delete(uid); if(g.members.size===0){ groups.delete(groupId); } else { if(g.admins.size===0){ const first = [...g.members][0]; g.admins.add(first); } g.members.forEach(pid=>{ const sid = userSockets.get(pid); if(sid) io.to(sid).emit('group:updated', {...g, members: [...g.members].map(mid=> getUserPublic(users.get(mid))), admins: [...g.admins]}); }); } socket.emit('group:left', {groupId}); });
+  socket.on('group:update', ({groupId, name, avatar, description})=>{ const g = groups.get(groupId); if(!g || !g.admins.has(uid)) return; if(name) g.name = name.trim().slice(0,40); if(avatar) g.avatar = avatar; if(description!==undefined) g.description = description.slice(0,200); g.members.forEach(pid=>{ const sid = userSockets.get(pid); if(sid) io.to(sid).emit('group:updated', {...g, members: [...g.members].map(mid=> getUserPublic(users.get(mid))), admins: [...g.admins]}); }); });
+  socket.on('call:invite', ({toUserId, type='video', groupId})=>{ const callId = uuidv4(); if(groupId){ const g = groups.get(groupId); if(!g || !g.members.has(uid)) return; const call = {id: callId, initiator: uid, type, groupId, participants: new Set([uid]), startedAt: Date.now()}; calls.set(callId, call); g.members.forEach(pid=>{ if(pid===uid) return; const sid = userSockets.get(pid); if(sid) io.to(sid).emit('call:incoming', {callId, from: getUserPublic(user), type, groupId, group: {id:g.id, name:g.name, avatar:g.avatar}}); }); socket.emit('call:started', {callId, type, groupId}); } else { if(!toUserId || !users.has(toUserId)) return; const targetSocket = userSockets.get(toUserId); if(!targetSocket) return socket.emit('call:error', {msg:'Пользователь оффлайн'}); const call = {id: callId, initiator: uid, type, participants: new Set([uid]), startedAt: Date.now(), toUserId}; calls.set(callId, call); io.to(targetSocket).emit('call:incoming', {callId, from: getUserPublic(user), type}); socket.emit('call:inviting', {callId, toUserId, type}); } });
+  socket.on('call:accept', ({callId})=>{ const call = calls.get(callId); if(!call) return; call.participants.add(uid); call.participants.forEach(pid=>{ const sid = userSockets.get(pid); if(sid) io.to(sid).emit('call:accepted', {callId, userId: uid, user: getUserPublic(user)}); }); if(call.toUserId){ const sid = userSockets.get(call.initiator); if(sid) io.to(sid).emit('call:accepted', {callId, userId: uid, user: getUserPublic(user)}); } socket.emit('call:joined', {callId, type: call.type, groupId: call.groupId}); });
+  socket.on('call:reject', ({callId})=>{ const call = calls.get(callId); if(!call) return; const initiatorSid = userSockets.get(call.initiator); if(initiatorSid) io.to(initiatorSid).emit('call:rejected', {callId, userId: uid}); if(!call.groupId) calls.delete(callId); });
+  socket.on('call:leave', ({callId})=>{ const call = calls.get(callId); if(!call) return; call.participants.delete(uid); call.participants.forEach(pid=>{ const sid = userSockets.get(pid); if(sid) io.to(sid).emit('call:participant:left', {callId, userId: uid}); }); if(call.participants.size===0){ calls.delete(callId); io.emit('call:ended', {callId}); } socket.emit('call:left', {callId}); });
+  socket.on('webrtc:offer', ({callId, toUserId, offer})=>{ const targetSocket = userSockets.get(toUserId); if(targetSocket) io.to(targetSocket).emit('webrtc:offer', {callId, fromUserId: uid, offer, fromUser: getUserPublic(user)}); });
+  socket.on('webrtc:answer', ({callId, toUserId, answer})=>{ const targetSocket = userSockets.get(toUserId); if(targetSocket) io.to(targetSocket).emit('webrtc:answer', {callId, fromUserId: uid, answer}); });
+  socket.on('webrtc:ice', ({callId, toUserId, candidate})=>{ const targetSocket = userSockets.get(toUserId); if(targetSocket) io.to(targetSocket).emit('webrtc:ice', {callId, fromUserId: uid, candidate}); });
+  socket.on('disconnect', ()=>{ userSockets.delete(uid); const u = users.get(uid); if(u){ u.status = 'offline'; u.lastSeen = Date.now(); socket.broadcast.emit('user:offline', {userId: uid, lastSeen: u.lastSeen}); } for(const [callId, call] of calls){ if(call.participants.has(uid)){ call.participants.delete(uid); call.participants.forEach(pid=>{ const sid = userSockets.get(pid); if(sid) io.to(sid).emit('call:participant:left', {callId, userId: uid}); }); if(call.participants.size===0) calls.delete(callId); } } });
+});
+app.get('*', (req,res)=>{ res.sendFile(path.join(clientDist, 'index.html'), (err)=>{ if(err) res.send('Cbopka server running. Build client first.'); }); });
+server.listen(PORT, '0.0.0.0', ()=>{
+  console.log(`Server running on http://0.0.0.0:${PORT}`);
+  setTimeout(()=> openBrowser(`http://localhost:${PORT}`), 500);
+});

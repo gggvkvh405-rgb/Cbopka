@@ -1,0 +1,27 @@
+appId: com.cbopka.desktop
+productName: Cbopka
+directories:
+  output: ../release
+  buildResources: .
+files:
+  - main.js
+  - preload.js
+  - ../server/**/*
+  - ../client/dist/**/*
+  - package.json
+extraResources:
+  - from: ../client/dist
+    to: client-dist
+  - from: ../server
+    to: server
+win:
+  target:
+    - target: portable
+      arch: x64
+  artifactName: Cbopka-${version}-${arch}.${ext}
+linux:
+  target: dir
+  artifactName: Cbopka-${version}-${arch}-${os}
+portable:
+  artifactName: Cbopka-${version}-portable.exe
+npmRebuild: false

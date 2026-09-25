@@ -1,0 +1,51 @@
+name: Build EXE
+
+on:
+  push:
+    branches: [ "release-exe", "arena/01a0c9e9-cbopka", "main" ]
+  workflow_dispatch:
+
+jobs:
+  build-win:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          
+      - name: Install dependencies
+        run: |
+          npm run install:all
+          npm run build
+          
+      - name: Build Electron EXE
+        run: |
+          cd electron
+          npm install
+          npm run build:win
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          
+      - name: Build Python EXE
+        run: |
+          pip install pywebview pyinstaller
+          pyinstaller --onefile --windowed --name Cbopka-App --icon=client/public/icon.png Cbopka.py
+          
+      - name: Upload EXE artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Cbopka-EXE-Windows
+          path: |
+            release/*.exe
+            dist/Cbopka-App.exe
+            electron/../release/*.exe
+            
+      - name: Upload to Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload v1.0.0-p2p release/Cbopka*.exe --clobber || true
+          gh release upload v1.0.0-p2p dist/Cbopka-App.exe --clobber || true
