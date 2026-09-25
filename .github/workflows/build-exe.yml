@@ -16,28 +16,22 @@ jobs:
         with:
           node-version: 22
 
-      - name: Check client dist (committed)
+      - name: Check client dist
         shell: bash
-        run: |
-          ls -lh client/dist/
-          ls -lh client/dist/assets/ | head -20
+        run: ls -lh client/dist/ && ls -lh client/dist/assets/ | head -10
 
       - name: Install server deps
         shell: bash
-        run: |
-          cd server
-          npm install
+        run: cd server && npm install
 
-      - name: Build Electron EXE (Variant 2 - True Native Window, not browser)
+      - name: Build Electron EXE (Variant 2 - True Native Window)
         shell: bash
         run: |
           cd electron
           npm install --legacy-peer-deps
-          npx electron-builder --win portable -c electron-builder.yml --publish never 2>&1 | tail -100 || true
-          echo "=== RELEASE FOLDER ==="
+          npx electron-builder --win portable -c electron-builder.yml --publish never 2>&1 | tail -50 || true
+          echo "=== RELEASE ==="
           ls -lh ../release/ || true
-          ls -R ../release/ | head -30 || true
-          echo "=== ELECTRON RELEASE ==="
           ls -lh release/ || true
 
       - name: Setup Python
@@ -45,37 +39,45 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Build Python EXE (Variant 2 - True Native App, pywebview window)
+      - name: Build Python EXE (Variant 2 - True Native App)
         shell: bash
         run: |
           pip install pywebview pyinstaller
-          echo "=== Building Native v2 ==="
-          pyinstaller --onefile --windowed --name Cbopka-App-Native Cbopka-Native.py 2>&1 | tail -30 || true
+          pyinstaller --onefile --windowed --name Cbopka-App-Native Cbopka-Native.py 2>&1 | tail -20 || true
+          pyinstaller --onefile --name Cbopka-App Cbopka.py 2>&1 | tail -20 || true
           ls -lh dist/ || true
-          echo "=== All exe files ==="
-          find . -name "*.exe" -type f -exec ls -lh {} \; 2>/dev/null | head -20 || true
-          echo "=== Python build done ==="
+          echo "=== ALL EXE ==="
+          ls -lh release/*.exe 2>/dev/null || echo "no release/*.exe"
+          ls -lh dist/*.exe 2>/dev/null || echo "no dist/*.exe"
+          ls -lh *.exe 2>/dev/null || echo "no *.exe at root"
+          find . -maxdepth 3 -name "*.exe" -type f -exec ls -lh {} \; 2>/dev/null | head -20 || true
 
       - name: Upload EXE artifacts
         uses: actions/upload-artifact@v4
         with:
           name: Cbopka-EXE-Windows
           path: |
-            release/
-            dist/
-            electron/release/
+            release/*.exe
+            dist/*.exe
+            electron/release/*.exe
 
-      - name: Upload to Release
-        shell: bash
+      - name: Upload to Release (explicit)
+        shell: pwsh
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "=== Finding exe files for release ==="
-          find . -name "*.exe" -type f | head -20
-          gh release view v1.0.0-p2p || gh release create v1.0.0-p2p --title "Cbopka P2P + Native Apps" --notes "Native apps v2 true window, not browser. Variant1: SEA exe opens browser. Variant2: Python pywebview native window + Electron native window"
-          for f in $(find . -name "*.exe" -type f | head -20); do
-            echo "Uploading $f"
-            gh release upload v1.0.0-p2p "$f" --clobber || true
-          done
-          echo "=== Release assets ==="
-          gh release view v1.0.0-p2p --json assets --jq '.assets[].name' || true
+          Write-Host "=== Finding exe files ==="
+          Get-ChildItem -Recurse -Filter *.exe | ForEach-Object { Write-Host $_.FullName " - " $_.Length }
+          Write-Host "=== Creating release if needed ==="
+          gh release view v1.0.0-p2p 2>&1 | Out-Null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create v1.0.0-p2p --title "Cbopka P2P + Native Apps" --notes "Native apps v2 true window, not browser"
+          }
+          Write-Host "=== Uploading ==="
+          $exes = Get-ChildItem -Recurse -Filter *.exe | Select-Object -First 10
+          foreach ($exe in $exes) {
+            Write-Host "Uploading $($exe.FullName)"
+            gh release upload v1.0.0-p2p $exe.FullName --clobber 2>&1 | Write-Host
+          }
+          Write-Host "=== Done ==="
+          gh release view v1.0.0-p2p --json assets --jq '.assets[].name' 2>&1 | Write-Host
