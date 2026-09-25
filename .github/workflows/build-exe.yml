@@ -34,9 +34,11 @@ jobs:
           cd electron
           npm install --legacy-peer-deps
           npx electron-builder --win portable -c electron-builder.yml --publish never 2>&1 | tail -100 || true
+          echo "=== RELEASE FOLDER ==="
           ls -lh ../release/ || true
+          ls -R ../release/ | head -30 || true
+          echo "=== ELECTRON RELEASE ==="
           ls -lh release/ || true
-          echo "Electron build done"
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -48,37 +50,32 @@ jobs:
         run: |
           pip install pywebview pyinstaller
           echo "=== Building Native v2 ==="
-          pyinstaller --onefile --windowed --name Cbopka-App-Native Cbopka-Native.py 2>&1 | tail -50 || echo "First try failed"
+          pyinstaller --onefile --windowed --name Cbopka-App-Native Cbopka-Native.py 2>&1 | tail -30 || true
           ls -lh dist/ || true
-          if [ ! -f dist/Cbopka-App-Native.exe ]; then
-            echo "Retrying without windowed..."
-            pyinstaller --onefile --name Cbopka-App-Native Cbopka-Native.py 2>&1 | tail -50 || true
-          fi
-          if [ ! -f dist/Cbopka-App-Native.exe ]; then
-            echo "Retrying simple..."
-            pyinstaller --onefile --name Cbopka-App Cbopka.py 2>&1 | tail -50 || true
-          fi
-          ls -lh dist/
-          echo "Python build done"
+          echo "=== All exe files ==="
+          find . -name "*.exe" -type f -exec ls -lh {} \; 2>/dev/null | head -20 || true
+          echo "=== Python build done ==="
 
       - name: Upload EXE artifacts
         uses: actions/upload-artifact@v4
         with:
           name: Cbopka-EXE-Windows
           path: |
-            release/*.exe
-            dist/*.exe
-            electron/release/*.exe
+            release/
+            dist/
+            electron/release/
 
       - name: Upload to Release
         shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          echo "=== Finding exe files for release ==="
+          find . -name "*.exe" -type f | head -20
           gh release view v1.0.0-p2p || gh release create v1.0.0-p2p --title "Cbopka P2P + Native Apps" --notes "Native apps v2 true window, not browser. Variant1: SEA exe opens browser. Variant2: Python pywebview native window + Electron native window"
-          for f in release/*.exe dist/*.exe electron/release/*.exe; do
-            if [ -f "$f" ]; then
-              echo "Uploading $f"
-              gh release upload v1.0.0-p2p "$f" --clobber || true
-            fi
+          for f in $(find . -name "*.exe" -type f | head -20); do
+            echo "Uploading $f"
+            gh release upload v1.0.0-p2p "$f" --clobber || true
           done
+          echo "=== Release assets ==="
+          gh release view v1.0.0-p2p --json assets --jq '.assets[].name' || true
