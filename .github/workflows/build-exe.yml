@@ -6,8 +6,29 @@ on:
   workflow_dispatch:
 
 jobs:
+  build-client:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Build client on Linux (reliable)
+        run: |
+          cd client
+          npm install --legacy-peer-deps
+          npm run build
+          ls -lh dist/
+      - name: Upload client dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: client-dist
+          path: client/dist/
+
   build-win:
     runs-on: windows-latest
+    needs: build-client
     steps:
       - uses: actions/checkout@v4
       
@@ -15,69 +36,45 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          
+
+      - name: Download client dist
+        uses: actions/download-artifact@v4
+        with:
+          name: client-dist
+          path: client/dist/
+
+      - name: List client dist
+        shell: bash
+        run: ls -lh client/dist/
+
       - name: Install server deps
         shell: bash
         run: |
           cd server
           npm install
-          
-      - name: Install client deps
-        run: |
-          cd client
-          npm install --legacy-peer-deps
-          
-      - name: Build client (pwsh)
-        shell: pwsh
-        run: |
-          cd client
-          Write-Host "Node version:"
-          node --version
-          Write-Host "NPM version:"
-          npm --version
-          Write-Host "Files:"
-          dir
-          Write-Host "Building..."
-          npm run build 2>&1 | Tee-Object -FilePath build.log
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host "Build failed, log:"
-            Get-Content build.log
-            exit 1
-          }
-          dir dist
-          
-      - name: Upload client build log on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: client-build-log
-          path: client/build.log
-          
+
       - name: Build Electron EXE (Variant 2 - True Native Window)
-        shell: pwsh
+        shell: bash
         run: |
           cd electron
           npm install --legacy-peer-deps
-          dir
-          npx electron-builder --win portable -c electron-builder.yml --publish never 2>&1 | Tee-Object -FilePath ../electron-build.log
-          dir ../release/ -ErrorAction SilentlyContinue
-          dir dist/ -ErrorAction SilentlyContinue
-          
+          npx electron-builder --win portable -c electron-builder.yml --publish never 2>&1 | tail -100 || true
+          ls -lh ../release/ || true
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          
+
       - name: Build Python EXE (Variant 2 - True Native App)
-        shell: pwsh
+        shell: bash
         run: |
           pip install pywebview pyinstaller
-          pyinstaller --onefile --windowed --name Cbopka-App-Native Cbopka-Native.py 2>&1 | Tee-Object -FilePath ../pyinstaller-native.log
-          pyinstaller --onefile --windowed --name Cbopka-App Cbopka.py 2>&1 | Tee-Object -FilePath ../pyinstaller.log
-          dir dist/
-          
+          pyinstaller --onefile --windowed --name Cbopka-App-Native Cbopka-Native.py
+          pyinstaller --onefile --windowed --name Cbopka-App Cbopka.py || true
+          ls -lh dist/
+
       - name: Upload EXE artifacts
-        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: Cbopka-EXE-Windows
@@ -85,17 +82,13 @@ jobs:
             release/*.exe
             dist/*.exe
             electron/release/*.exe
-            client/dist/**/*
-            *-build.log
-            *.log
-            
+
       - name: Upload to Release
-        if: success()
         shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release view v1.0.0-p2p || gh release create v1.0.0-p2p --title "Cbopka P2P + Native Apps" --notes "Native apps v2 true window"
+          gh release view v1.0.0-p2p || gh release create v1.0.0-p2p --title "Cbopka P2P + Native Apps" --notes "Native apps v2 true window, not browser"
           for f in release/*.exe dist/*.exe; do
             if [ -f "$f" ]; then
               echo "Uploading $f"
